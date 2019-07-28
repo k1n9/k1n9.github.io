@@ -6,31 +6,37 @@
 
 # Setup
 
-title:          "rickgray.me"
+title:          "k1n9's Blog"
 tagline:        "Quiet And Powerful"
 description:    "Something Specail"
-url:            "http://rickgray.me"
+url:            "http://k1n9.me"
 baseurl:        ""
 paginate:       18  
 paginate_path:  "/page:num"
 
 # Set your friends info
 friends:
-    - name: "Friend-One"
-      url: "#"
-      desc: "Description"
-    - name: "Friend-Two"
-      url: "#"
-      desc: "Description"
+    - name: "Syclover Security Team"
+      url: "http://www.sycsec.com/"
+      # desc: "Description"
+    - name: "大柠檬"
+      url: "https://www.cnblogs.com/iamstudy/"
+    - name: "沐师傅"
+      url: "https://o0xmuhe.github.io/"
+    - name: "石头"
+      url: "https://stone.moe/"
 
 author:
-    name: "RickGray"
+    name: "k1n9"
     url: "set plz"
-    email: "set plz"
-    weibo: "set plz"
-    github: "set plz"
+    email: "wtfk1n9#gmail.com"
+    # weibo: "set plz"
+    # github: "set plz"
 
 # Set your Disqus shortname here
 disqus:
     shortname: "set plz"
-    show: True
+    show: False
+
+plugins: 
+    [jekyll-paginate]

@@ -1,0 +1,203 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <title>PDO操作MySQL的安全性问题</title>
+  <link rel="icon" href="/favicon.ico">
+  <link rel="stylesheet" href="/public/css/amazeui.min.css">
+  <link rel="stylesheet" href="/public/css/app.css">
+</head>
+<body>
+
+<div class="am-container lp-container">
+  <header class="am-topbar lp-topbar">
+    <h1 class="am-topbar-brand">
+      <a href="/">k1n9's Blog</a>
+    </h1>
+    <button class="am-topbar-btn am-topbar-toggle am-btn am-btn-sm am-btn-danger am-show-sm-only" data-am-collapse="{target: '#lp-topbar-collapse'}"><span class="am-sr-only">导航切换</span> <span class="am-icon-bars"></span></button>
+    <div class="am-collapse am-topbar-collapse am-topbar-right" id="lp-topbar-collapse">
+      <ul class="am-nav am-nav-pills am-topbar-nav">
+        <li><a href="/">Archives</a></li>
+<!--         <li><a href="#">Categories</a></li> -->
+        <li><a href="/friends.html">Friends</a></li>
+   <!--      <li><a href="#">About Me</a></li> -->
+        <li><a href="/rss.xml">Rss</a></li>
+      </ul>
+    </div>
+  </header>
+</div>
+
+
+<div class="am-container lp-container">
+  <div class="lp-post">
+    <div class="lp-post-header">
+      <h1 class="lp-post-title">PDO操作MySQL的安全性问题</h1>
+      <div class="lp-post-meta">
+        <i class="am-icon-calculator"></i><span class="lp-post-date">2016-12-01</span>
+        <i class="am-icon-tags"></i><span class="lp-post-tags">PHP, MySQL, 注入</span>
+      </div>
+    </div>
+    <div class="lp-post-content">
+    <p>在网上搜到关于PDO的信息大多都是如何使用它来防止注入这样的安全问题出现，导致以前一直觉得只要是使用PDO的预处理来操作数据库的话就不会再有注入的出现。直到前些时间看了微擎的源码后发现并不是这样的，再好的东西用的不好还是会有问题出现。也难怪它被挖了这么多的注入。。。</p>
+
+<h2 id="一些基本的用法">一些基本的用法</h2>
+<ul>
+  <li>PDO::query() — 执行一条语句，并返回一个PDOStatement对象</li>
+  <li>PDO::exec() — 执行一条 SQL 语句，并返回受影响的行数</li>
+  <li>PDO::errorInfo() — 获取跟上一次语句句柄操作相关的扩展错误信息</li>
+  <li>PDO::prepare() — 预处理一条SQL语句，并返回一个PDOStatement对象</li>
+  <li>PDOStatement::execute() — 执行一条预处理语句</li>
+</ul>
+
+<p>结合点代码来看</p>
+<div class="language-php highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="cp">&lt;?php</span>
+	<span class="nb">define</span><span class="p">(</span> <span class="s1">'host'</span><span class="p">,</span> <span class="s1">'localhost'</span> <span class="p">);</span>
+    <span class="nb">define</span><span class="p">(</span> <span class="s1">'user'</span><span class="p">,</span> <span class="s1">'root'</span> <span class="p">);</span>
+    <span class="nb">define</span><span class="p">(</span> <span class="s1">'password'</span><span class="p">,</span> <span class="s1">'root'</span> <span class="p">);</span>
+    <span class="nb">define</span><span class="p">(</span> <span class="s1">'dbname'</span><span class="p">,</span> <span class="s1">'mytest'</span> <span class="p">);</span>
+
+    <span class="k">function</span> <span class="nf">connect</span><span class="p">(){</span>
+        <span class="k">try</span> <span class="p">{</span>
+            <span class="nv">$PDO</span> <span class="o">=</span> <span class="k">new</span> <span class="nx">PDO</span><span class="p">(</span> <span class="s1">'mysql:host='</span> <span class="o">.</span> <span class="nx">host</span> <span class="o">.</span> <span class="s1">';dbname='</span> <span class="o">.</span> <span class="nx">dbname</span><span class="p">,</span> <span class="nx">user</span><span class="p">,</span> <span class="nx">password</span> <span class="p">);</span>
+        <span class="p">}</span><span class="k">catch</span> <span class="p">(</span><span class="nx">PDOException</span> <span class="nv">$e</span><span class="p">)</span> <span class="p">{</span>
+            <span class="k">echo</span> <span class="s1">'Error connecting to MySQL: '</span> <span class="o">.</span> <span class="nv">$e</span><span class="o">-&gt;</span><span class="na">getMessage</span><span class="p">();</span>
+        <span class="p">}</span>
+
+        <span class="k">return</span> <span class="nv">$PDO</span><span class="p">;</span>
+    <span class="p">}</span>
+
+    <span class="nv">$pdo</span> <span class="o">=</span> <span class="nx">connect</span><span class="p">();</span>
+    <span class="cm">/*
+    $res = $pdo-&gt;query("SELECT * FROM admin;");
+    返回一个PDOStatement对象，可通过fetchobject()来获取数据
+    */</span>
+    <span class="cm">/*
+    $res = $pdo-&gt;exec("DELETE from admin WHERE id=3 or id=4;");
+    返回影响的行数，这里的话就是2了
+    */</span>
+
+    <span class="c1">//$sql = "SELECT * FROM admin WHERE id=? or id=?";</span>
+    <span class="nv">$sql</span> <span class="o">=</span> <span class="s2">"SELECT * FROM admin WHERE id=:id1 or id=:id2"</span><span class="p">;</span>
+    <span class="c1">//上面是两种不同的参数标记方式</span>
+
+    <span class="nv">$stmt</span> <span class="o">=</span> <span class="nv">$pdo</span><span class="o">-&gt;</span><span class="na">prepare</span><span class="p">(</span><span class="nv">$sql</span><span class="p">);</span>
+
+    <span class="c1">//$res = $stmt-&gt;execute(array(1, 2));</span>
+    <span class="nv">$res</span> <span class="o">=</span> <span class="nv">$stmt</span><span class="o">-&gt;</span><span class="na">execute</span><span class="p">(</span><span class="k">array</span><span class="p">(</span><span class="s1">'id1'</span><span class="o">=&gt;</span><span class="mi">1</span><span class="p">,</span> <span class="s1">'id2'</span><span class="o">=&gt;</span><span class="mi">2</span><span class="p">));</span>
+    <span class="c1">//上面是对应不同参数标记方式的绑定PHP变量的方法，也可以用bindParam()来绑定变量</span>
+    
+    <span class="nb">var_dump</span><span class="p">(</span><span class="nv">$res</span><span class="p">);</span>
+    <span class="k">echo</span> <span class="s1">'&lt;br&gt;'</span><span class="p">;</span>
+    <span class="k">echo</span> <span class="s1">'&lt;br&gt;errorinfo:&lt;br&gt;'</span><span class="p">;</span>
+    <span class="nb">var_dump</span><span class="p">(</span><span class="nv">$stmt</span><span class="o">-&gt;</span><span class="na">errorinfo</span><span class="p">());</span>
+    <span class="k">echo</span> <span class="s1">'&lt;br&gt;&lt;br&gt;data:&lt;br&gt;'</span><span class="p">;</span>
+    <span class="nb">var_dump</span><span class="p">(</span><span class="nv">$stmt</span><span class="o">-&gt;</span><span class="na">fetchobject</span><span class="p">());</span>
+<span class="cp">?&gt;</span>
+</code></pre></div></div>
+<h2 id="问题的出现">问题的出现</h2>
+<p>正常的预处理的话是不会发生问题的，但当预处理的句子受用户的输入控制的时候问题就出现了。预处理句子可控的话就跟平时的注入没啥区别了，联合查询或是PDO支持多语句的执行都可以，要是调用了errorinfo的话还可以构造报错的句子来进行注入。</p>
+
+<p>有的时候代码是用了用户的输入来做为预处理语句里的参数标记，这种情况预处理的句子就是可控的了。看个微擎实际的例子。</p>
+
+<p>framework/class/db.class.php中的implode函数</p>
+
+<div class="language-php highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="k">private</span> <span class="k">function</span> <span class="nf">implode</span><span class="p">(</span><span class="nv">$params</span><span class="p">,</span> <span class="nv">$glue</span> <span class="o">=</span> <span class="s1">','</span><span class="p">)</span> <span class="p">{</span>
+        <span class="nv">$result</span> <span class="o">=</span> <span class="k">array</span><span class="p">(</span><span class="s1">'fields'</span> <span class="o">=&gt;</span> <span class="s1">' 1 '</span><span class="p">,</span> <span class="s1">'params'</span> <span class="o">=&gt;</span> <span class="k">array</span><span class="p">());</span>
+        <span class="nv">$split</span> <span class="o">=</span> <span class="s1">''</span><span class="p">;</span>
+        <span class="nv">$suffix</span> <span class="o">=</span> <span class="s1">''</span><span class="p">;</span>
+        <span class="nv">$allow_operator</span> <span class="o">=</span> <span class="k">array</span><span class="p">(</span><span class="s1">'&gt;'</span><span class="p">,</span> <span class="s1">'&lt;'</span><span class="p">,</span> <span class="s1">'&lt;&gt;'</span><span class="p">,</span> <span class="s1">'!='</span><span class="p">,</span> <span class="s1">'&gt;='</span><span class="p">,</span> <span class="s1">'&lt;='</span><span class="p">,</span> <span class="s1">'+='</span><span class="p">,</span> <span class="s1">'-='</span><span class="p">,</span> <span class="s1">'LIKE'</span><span class="p">,</span> <span class="s1">'like'</span><span class="p">);</span>
+        <span class="k">if</span> <span class="p">(</span><span class="nb">in_array</span><span class="p">(</span><span class="nb">strtolower</span><span class="p">(</span><span class="nv">$glue</span><span class="p">),</span> <span class="k">array</span><span class="p">(</span><span class="s1">'and'</span><span class="p">,</span> <span class="s1">'or'</span><span class="p">)))</span> <span class="p">{</span>
+            <span class="nv">$suffix</span> <span class="o">=</span> <span class="s1">'__'</span><span class="p">;</span>
+        <span class="p">}</span>
+        <span class="k">if</span> <span class="p">(</span><span class="o">!</span><span class="nb">is_array</span><span class="p">(</span><span class="nv">$params</span><span class="p">))</span> <span class="p">{</span>
+            <span class="nv">$result</span><span class="p">[</span><span class="s1">'fields'</span><span class="p">]</span> <span class="o">=</span> <span class="nv">$params</span><span class="p">;</span>
+            <span class="k">return</span> <span class="nv">$result</span><span class="p">;</span>
+        <span class="p">}</span>
+        <span class="k">if</span> <span class="p">(</span><span class="nb">is_array</span><span class="p">(</span><span class="nv">$params</span><span class="p">))</span> <span class="p">{</span>
+            <span class="nv">$result</span><span class="p">[</span><span class="s1">'fields'</span><span class="p">]</span> <span class="o">=</span> <span class="s1">''</span><span class="p">;</span>
+            <span class="k">foreach</span> <span class="p">(</span><span class="nv">$params</span> <span class="k">as</span> <span class="nv">$fields</span> <span class="o">=&gt;</span> <span class="nv">$value</span><span class="p">)</span> <span class="p">{</span>
+                <span class="nv">$operator</span> <span class="o">=</span> <span class="s1">''</span><span class="p">;</span>
+                <span class="k">if</span> <span class="p">(</span><span class="nb">strpos</span><span class="p">(</span><span class="nv">$fields</span><span class="p">,</span> <span class="s1">' '</span><span class="p">)</span> <span class="o">!==</span> <span class="k">FALSE</span><span class="p">)</span> <span class="p">{</span>
+                    <span class="k">list</span><span class="p">(</span><span class="nv">$fields</span><span class="p">,</span> <span class="nv">$operator</span><span class="p">)</span> <span class="o">=</span> <span class="nb">explode</span><span class="p">(</span><span class="s1">' '</span><span class="p">,</span> <span class="nv">$fields</span><span class="p">,</span> <span class="mi">2</span><span class="p">);</span>
+                    <span class="k">if</span> <span class="p">(</span><span class="o">!</span><span class="nb">in_array</span><span class="p">(</span><span class="nv">$operator</span><span class="p">,</span> <span class="nv">$allow_operator</span><span class="p">))</span> <span class="p">{</span>
+                        <span class="nv">$operator</span> <span class="o">=</span> <span class="s1">''</span><span class="p">;</span>
+                    <span class="p">}</span>
+                <span class="p">}</span>
+                <span class="k">if</span> <span class="p">(</span><span class="k">empty</span><span class="p">(</span><span class="nv">$operator</span><span class="p">))</span> <span class="p">{</span>
+                    <span class="nv">$fields</span> <span class="o">=</span> <span class="nb">trim</span><span class="p">(</span><span class="nv">$fields</span><span class="p">);</span>
+                    <span class="k">if</span> <span class="p">(</span><span class="nb">is_array</span><span class="p">(</span><span class="nv">$value</span><span class="p">))</span> <span class="p">{</span>
+                        <span class="nv">$operator</span> <span class="o">=</span> <span class="s1">'IN'</span><span class="p">;</span>
+                    <span class="p">}</span> <span class="k">else</span> <span class="p">{</span>
+                        <span class="nv">$operator</span> <span class="o">=</span> <span class="s1">'='</span><span class="p">;</span>
+                    <span class="p">}</span>
+                <span class="p">}</span> <span class="k">elseif</span> <span class="p">(</span><span class="nv">$operator</span> <span class="o">==</span> <span class="s1">'+='</span><span class="p">)</span> <span class="p">{</span>
+                    <span class="nv">$operator</span> <span class="o">=</span> <span class="s2">" = `</span><span class="nv">$fields</span><span class="s2">` + "</span><span class="p">;</span>
+                <span class="p">}</span> <span class="k">elseif</span> <span class="p">(</span><span class="nv">$operator</span> <span class="o">==</span> <span class="s1">'-='</span><span class="p">)</span> <span class="p">{</span>
+                    <span class="nv">$operator</span> <span class="o">=</span> <span class="s2">" = `</span><span class="nv">$fields</span><span class="s2">` - "</span><span class="p">;</span>
+                <span class="p">}</span>
+                <span class="k">if</span> <span class="p">(</span><span class="nb">is_array</span><span class="p">(</span><span class="nv">$value</span><span class="p">))</span> <span class="p">{</span>
+                    <span class="nv">$insql</span> <span class="o">=</span> <span class="k">array</span><span class="p">();</span>
+                    <span class="k">foreach</span> <span class="p">(</span><span class="nv">$value</span> <span class="k">as</span> <span class="nv">$k</span> <span class="o">=&gt;</span> <span class="nv">$v</span><span class="p">)</span> <span class="p">{</span>
+                        <span class="nv">$insql</span><span class="p">[]</span> <span class="o">=</span> <span class="s2">":</span><span class="si">{</span><span class="nv">$suffix</span><span class="si">}{</span><span class="nv">$fields</span><span class="si">}</span><span class="s2">_</span><span class="si">{</span><span class="nv">$k</span><span class="si">}</span><span class="s2">"</span><span class="p">;</span>
+                        <span class="nv">$result</span><span class="p">[</span><span class="s1">'params'</span><span class="p">][</span><span class="s2">":</span><span class="si">{</span><span class="nv">$suffix</span><span class="si">}{</span><span class="nv">$fields</span><span class="si">}</span><span class="s2">_</span><span class="si">{</span><span class="nv">$k</span><span class="si">}</span><span class="s2">"</span><span class="p">]</span> <span class="o">=</span> <span class="nb">is_null</span><span class="p">(</span><span class="nv">$v</span><span class="p">)</span> <span class="o">?</span> <span class="s1">''</span> <span class="o">:</span> <span class="nv">$v</span><span class="p">;</span>
+                    <span class="p">}</span>
+                    <span class="nv">$result</span><span class="p">[</span><span class="s1">'fields'</span><span class="p">]</span> <span class="o">.=</span> <span class="nv">$split</span> <span class="o">.</span> <span class="s2">"`</span><span class="nv">$fields</span><span class="s2">` </span><span class="si">{</span><span class="nv">$operator</span><span class="si">}</span><span class="s2"> ("</span><span class="o">.</span><span class="nb">implode</span><span class="p">(</span><span class="s2">","</span><span class="p">,</span> <span class="nv">$insql</span><span class="p">)</span><span class="o">.</span><span class="s2">")"</span><span class="p">;</span>
+                    <span class="nv">$split</span> <span class="o">=</span> <span class="s1">' '</span> <span class="o">.</span> <span class="nv">$glue</span> <span class="o">.</span> <span class="s1">' '</span><span class="p">;</span>
+                <span class="p">}</span> <span class="k">else</span> <span class="p">{</span>
+                    <span class="nv">$result</span><span class="p">[</span><span class="s1">'fields'</span><span class="p">]</span> <span class="o">.=</span> <span class="nv">$split</span> <span class="o">.</span> <span class="s2">"`</span><span class="nv">$fields</span><span class="s2">` </span><span class="si">{</span><span class="nv">$operator</span><span class="si">}</span><span class="s2">  :</span><span class="si">{</span><span class="nv">$suffix</span><span class="si">}</span><span class="nv">$fields</span><span class="s2">"</span><span class="p">;</span>
+                    <span class="nv">$split</span> <span class="o">=</span> <span class="s1">' '</span> <span class="o">.</span> <span class="nv">$glue</span> <span class="o">.</span> <span class="s1">' '</span><span class="p">;</span>
+                    <span class="nv">$result</span><span class="p">[</span><span class="s1">'params'</span><span class="p">][</span><span class="s2">":</span><span class="si">{</span><span class="nv">$suffix</span><span class="si">}</span><span class="nv">$fields</span><span class="s2">"</span><span class="p">]</span> <span class="o">=</span> <span class="nb">is_null</span><span class="p">(</span><span class="nv">$value</span><span class="p">)</span> <span class="o">?</span> <span class="s1">''</span> <span class="o">:</span> <span class="nv">$value</span><span class="p">;</span>
+                <span class="p">}</span>
+            <span class="p">}</span>
+        <span class="p">}</span>
+    <span class="k">return</span> <span class="nv">$result</span><span class="p">;</span>
+<span class="p">}</span>
+</code></pre></div></div>
+<p>要是传入的参数是一个数组的话，它会拿数组的名字和下标结合成一个预处理语句的参数标记。拿一个之前的漏洞点来试下，加个die(var_dump())来看预处理的句子<br />
+<img src="https://ooo.0o0.ooo/2016/12/04/5843b98de9b81.jpg" alt="1.jpg" />
+参数标记还要成功绑定才不会直接是错误不执行预处理的句子，结合一个之前的注入点这里的一个利用方法就是<br />
+<img src="https://ooo.0o0.ooo/2016/12/04/5843bb1e853b3.jpg" alt="2.jpg" />
+这里用报错语句的原因是代码默认是有调用errorinfo函数的。再贴张当时在官方demo测试的图<br />
+<img src="https://ooo.0o0.ooo/2016/12/04/5843bbce6bd77.jpg" alt="3.jpg" /></p>
+
+<h2 id="后记">后记</h2>
+<p>这个是之前在先知提交的，后来发现重了，而且这么久了官方也一直没修。就当是记录PDO的一些知识了，还有就是这文章本来两天前就应该写好了的，结果傻逼的误删了一个卷再加上一些其它的事就拖到了今天了  - -</p>
+
+
+    </div>
+    
+    
+
+  </div>
+</div>
+
+<div class="am-container lp-container">
+  <footer class="am-footer lp-footer">
+    <p>Copyright © 2014-2015 All Rights Reserved</p>
+    <p>Theme By <a href="https://github.com/RickGray/light-post">LightPost</a></p>
+  </afooter>
+</div>
+
+
+<div data-am-widget="gotop" class="am-gotop am-gotop-fixed">
+  <a href="#top" title="回到顶部">
+    <span class="am-gotop-title">GoTop</span>
+    <i class="am-gotop-icon am-icon-chevron-up"></i>
+  </a>
+</div>
+
+<script src="/public/js/jquery.min.js"></script>
+<script src="/public/js/amazeui.min.js"></script>
+<script>
+var _hmt = _hmt || [];
+(function() {
+var hm = document.createElement("script");
+hm.src = "//hm.baidu.com/hm.js?cff98725226896ccfb3b1634435b315c";
+var s = document.getElementsByTagName("script")[0];
+s.parentNode.insertBefore(hm, s);
+})();
+</script>
+</div>
+</body>
+</html>

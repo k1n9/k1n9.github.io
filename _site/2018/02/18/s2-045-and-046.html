@@ -1,0 +1,174 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <title>S2-045/S2-046漏洞分析</title>
+  <link rel="icon" href="/favicon.ico">
+  <link rel="stylesheet" href="/public/css/amazeui.min.css">
+  <link rel="stylesheet" href="/public/css/app.css">
+</head>
+<body>
+
+<div class="am-container lp-container">
+  <header class="am-topbar lp-topbar">
+    <h1 class="am-topbar-brand">
+      <a href="/">k1n9's Blog</a>
+    </h1>
+    <button class="am-topbar-btn am-topbar-toggle am-btn am-btn-sm am-btn-danger am-show-sm-only" data-am-collapse="{target: '#lp-topbar-collapse'}"><span class="am-sr-only">导航切换</span> <span class="am-icon-bars"></span></button>
+    <div class="am-collapse am-topbar-collapse am-topbar-right" id="lp-topbar-collapse">
+      <ul class="am-nav am-nav-pills am-topbar-nav">
+        <li><a href="/">Archives</a></li>
+<!--         <li><a href="#">Categories</a></li> -->
+        <li><a href="/friends.html">Friends</a></li>
+   <!--      <li><a href="#">About Me</a></li> -->
+        <li><a href="/rss.xml">Rss</a></li>
+      </ul>
+    </div>
+  </header>
+</div>
+
+
+<div class="am-container lp-container">
+  <div class="lp-post">
+    <div class="lp-post-header">
+      <h1 class="lp-post-title">S2-045/S2-046漏洞分析</h1>
+      <div class="lp-post-meta">
+        <i class="am-icon-calculator"></i><span class="lp-post-date">2018-02-18</span>
+        <i class="am-icon-tags"></i><span class="lp-post-tags">Java, Struts2</span>
+      </div>
+    </div>
+    <div class="lp-post-content">
+    <p>这是以前要写的一篇分析了，当时想的是着重分析 OGNL 的安全防护和怎么绕过的，因为针对漏洞本身的分析很多人已经写了。可惜也不是写的很细，先放这吧</p>
+
+<h3 id="摘要">摘要</h3>
+
+<p>3月6日，Struts2发布了关于S2-045的漏洞公告，提及到可以通过构造好的Content-Type值来实现远程代码执行攻击，影响的版本为Struts2 2.3.5 - Struts2 2.3.31，Struts2 2.5 - Struts2 2.5.10。由于在默认的情况下便可触发漏洞，并且有人发出了可以实现命令执行的Payload导致该漏洞的影响不仅广而且利用成本低，从一些SRC平台上对该漏洞的提交情况也可以看出这一点。随后在20日出来的S2-046是在S2-045的基础上的其它触发点了。由于该漏洞造成的影响非常广，所以值得对该漏洞进行一个回顾。</p>
+
+<h3 id="struts2-及漏洞相关背景">Struts2 及漏洞相关背景</h3>
+
+<p>Apache Struts2 是一个用于开发Java EE网络应用程序的开放源代码网页应用程序架构。它利用并延伸了 Java Servlet API，鼓励开发者采用MVC架构。缘起于 Apache Struts 的 WebWork 框架，旨在提供相对于 Struts 框架的增强和改进，同时保留与 Struts 框架类似的结构。2005 年 12 月，WebWork 宣布 WebWork 2.2 以 Apache Struts2 的名义合并至 Struts。（摘自维基百科） <br />
+由于 Struts2 中的 OGNL 引擎功能比较强大，可通过其来访问 Java 对象的成员变量或方法，如果输入点可控便会造成安全问题。尽管 Struts2 也有安全管理器来避免通过 OGNL 来执行命令等一些危险的操作，但是该安全管理器也是一次又一次的被绕过。</p>
+
+<h3 id="s2-045-漏洞详情">S2-045 漏洞详情</h3>
+
+<p>可先借助 javaagent 来查看漏洞利用过程的调用栈
+<img src="https://i.loli.net/2019/07/27/5d3c54dfec9ed13511.png" alt="" /></p>
+
+<p>可以看到大体的流程为: <br />
+FileUploadInterceptor.intercept() –&gt; LocalizedTextUtil.findText() –&gt; LocalizedTextUtil.getDefaultMessage() –&gt; TextParseUtil.translateVariables() –&gt; OgnlTextParser.evaluate()</p>
+
+<p>使用 javaagent 来查看调用栈的好处在于只有 payload 和漏洞环境的情况下就可以大致知道漏洞的利用过程，方便接下来做动态分析。下面再使用动态分析的方式来跟一下漏洞利用的整个过程，struts2 会在 StrutsPrepareFilter 过滤器中将 HttpServletRequest 请求封装成 StrutsRequestWrapper 或是 MultiPartRequestWrapper。而这个漏洞就是发生在对 MultiPart 请求的处理上，在 StrutsPrepareFilter 类中的 doFilter 方法中下断点即可。对于这里 Get 或是 Post 请求都是一样的<br />
+<img src="https://i.loli.net/2019/07/27/5d3c54e0c13eb61522.png" alt="" /></p>
+
+<p>往下跟会进入 wrapRequest 方法
+<img src="https://i.loli.net/2019/07/27/5d3c54e0d3e9088471.png" alt="" /></p>
+
+<p>在这个方法中可以看到它是通过请求头中 Content-Type 的值中是否包含 “multipart/form-data” 来决定该请求是否为 MultiPart 请求，这也是为什么 payload 在 Content-Type 中需要包含 “multipart/form-data” 的原因，同时也说明了在利用的时候并不需要去构造一个上传文件的包了，只需要在请求中修改 Content-Type 的值包含 “multipart/form-data” 就行。接着通过 getMultiPartRequest 方法来获取 MultiPart 请求的处理类。
+<img src="https://i.loli.net/2019/07/27/5d3c54e1f2c2730014.png" alt="" /></p>
+
+<p>可以看到该方法从容器中获取了名字为 multipartHandlerName 的值的一个实例来作为处理器。而 multipartHandlerName 的值来自于配置中的 struts.multipart.parser 的值，该值默认为 ”jakarta“，也就是说最终获取到的是一个 JakartaMultiPartRequest 类的实例，而问题就是出现在该类中，这也解释了为啥这个漏洞能影响这么大，因为在默认的情况下就可以被利用。</p>
+
+<p>继续往下跟的时候会进入 JakartaMultiPartRequest 类中的 parseRequest 方法，再跟入 FileItemIteratorImpl 类中的构造方法
+<img src="https://i.loli.net/2019/07/27/5d3c54e315e7972112.png" alt="" /></p>
+
+<p>可以看到这里有一个对 ContentType 的值得判断，要不是以 “multipart/” 开头的话便会抛出一个 InvalidContentTypeException 的异常，跟下去看它对这里的异常信息是如何处理的，因为这个异常信息里是包含着 Content-Type 的值的，也就是说里面包含着 payload 中构造好的 OGNL 表达式。再往下跟直到 OGNL 表达式执行就是一开始通过 javaagent 看到的调用栈中的过程了，看一下 translateVariables 方法
+<img src="https://i.loli.net/2019/07/27/5d3c54e43d55099495.png" alt="" /></p>
+
+<p>会通过以 $ 或是 % 字符开头来提取出真正的表达式，所以在 payload 中使用 ${} 来写一样是可以的。</p>
+
+<h3 id="s2-046-漏洞详情">S2-046 漏洞详情</h3>
+
+<p>S2-046 是在 S2-045 的基础上的，只不过是触发点不一样了。流程跟 S2-045 的流程一样，在 Streams 类中的 checkFileName 方法会对文件名进行检查，若是包含空字节的话会抛出 InvalidFileNameException 异常
+<img src="https://i.loli.net/2019/07/27/5d3c5589cffac94918.png" alt="" /></p>
+
+<p>其中异常信息含有完整的文件名，这里的异常信息也经过了和 S2-045 一样的处理，也就是说文件名中的 OGNL 表达式也会被执行。针对该漏洞的利用只需要在模拟文件上传时在 Content-Disposition 的 filename 中加入空字节，并将 OGNL 表达式写到 filename 就好。S2-046 还有一个触发方式是 Content-Length 长度超过 2M，但是这种触发需要配置 struts.multipart.parser 为 jakarta-stream 才行。</p>
+
+<h3 id="官方修复">官方修复</h3>
+
+<p>Struts2 2.5.10.1
+<img src="https://i.loli.net/2019/07/27/5d3c558a7278c56779.png" alt="" /></p>
+
+<p>Struts2 2.3.32
+<img src="https://i.loli.net/2019/07/27/5d3c558a37bfa99035.png" alt="" /></p>
+
+<p>都删掉了直接把错误信息传入 findText 函数的做法。</p>
+
+<h3 id="payload-分析">payload 分析</h3>
+
+<p>这是当时出来的一个 payload</p>
+
+<div class="highlighter-rouge"><div class="highlight"><pre class="highlight"><code>%{(#nike='multipart/form-data').(#dm=@ognl.OgnlContext@DEFAULT_MEMBER_ACCESS).(#_memberAccess?(#_memberAccess=#dm):((#container=#context['com.opensymphony.xwork2.ActionContext.container']).(#ognlUtil=#container.getInstance(@com.opensymphony.xwork2.ognl.OgnlUtil@class)).(#ognlUtil.getExcludedPackageNames().clear()).(#ognlUtil.getExcludedClasses().clear()).(#context.setMemberAccess(#dm)))).(#cmd='ifconfig').(#iswin=(@java.lang.System@getProperty('os.name').toLowerCase().contains('win'))).(#cmds=(#iswin?{'cmd.exe','/c',#cmd}:{'/bin/bash','-c',#cmd})).(#p=new java.lang.ProcessBuilder(#cmds)).(#p.redirectErrorStream(true)).(#process=#p.start()).(#ros=(@org.apache.struts2.ServletActionContext@getResponse().getOutputStream())).(@org.apache.commons.io.IOUtils@copy(#process.getInputStream(),#ros)).(#ros.flush())}
+</code></pre></div></div>
+
+<p>跟了整个执行过程之后可知 “multipart/form-data” 其实只要不放在最开始的地方就好了，后面是通过系统名字来判断系统类型，执行命令后在通过 Response 来获取输出。对 payload 的分析关键在于这里它是如何绕过 Struts2 的安全管理器的。</p>
+
+<p>跟踪下创建 OGNL 上下文的过程
+<img src="https://i.loli.net/2019/07/27/5d3c54e45161076156.png" alt="" /></p>
+
+<p>对于 OGNL 的执行存在限制的三个变量都在 _memberAccess 中。allowStaticMethodAccess 是否允许访问静态方法，该值来自于配置 default.properties 中，默认为 false。excludedClasses 和 excludedPackageNames 为排除的类和包名，它们的值来自于配置 struts-default.xml 中，在 2.5.10 中为
+<img src="https://i.loli.net/2019/07/27/5d3c54e579daf86515.png" alt="" /></p>
+
+<p>在 S2-032 的 payload 中只用到了一句话就绕过了安全管理器</p>
+
+<div class="highlighter-rouge"><div class="highlight"><pre class="highlight"><code>#_memberAccess=@ognl.OgnlContext@DEFAULT_MEMBER_ACCESS
+</code></pre></div></div>
+
+<p>对静态成员变量的访问是不受限的，可以看下 DEFAULT_MEMBER_ACCESS 的值
+<img src="https://i.loli.net/2019/07/27/5d3c54e5a799640452.png" alt="" />
+<img src="https://i.loli.net/2019/07/27/5d3c55870fd7c73183.png" alt="" /></p>
+
+<p>可以看到如果拿 DEFAULT_MEMBER_ACCESS 来覆盖 _memberAccess 的值的话便不会包含到限制 OGNL 执行的三个变量，这样是可以做到绕过安全管理器的，至于这里的 _memberAccess 至于为啥能被修改可以看参考中随风的博客的链接。</p>
+
+<p>但是从这次的 payload 中可以看出来它并不是完全依赖于覆盖的方式来绕过的，它检测了一下，要是能访问到 _memberAccess 的话便直接覆盖，不然就获取当前的上下文容器 ActionContext 再得到 ognlUtil 实例，接着通过 ognlUtil 获取到两个排除集合后将其清空，再利用 OgnlContext 中的 setMemberAccess 方法来重新设置 _memberAccess 值为 DEFAULT_MEMBER_ACCESS 从而做到绕过安全管理器。至于为啥不能再采取直接覆盖的方式了，可以看下 OGNL 包中 OgnlContext 类的变化
+<img src="https://i.loli.net/2019/07/27/5d3c558a0021875592.png" alt="" /></p>
+
+<p>这里比较了 ognl-3.0.13 和 ognl-3.1.12（分别对应着 S2-032 和 S2-045 影响版本中的 OGNL 版本），可以明显看到新的版本中已经将对于 _memberAccess 的操作移除掉了，所以 payload 的作者通过检测是否能访问到 _memberAccess 再决定使用什么样的方式来绕过安全管理器便应该是为了提高 payload 的适用性。对于目前的最新版本 Struts 2.5.13 和 Struts 2.3.34 用到的 OGNL 版本分别为 3.1.15 和 3.0.21，其中都在 OgnlContext 中删除了对于 context 的操作，也就是说再也没法通过 #context 获取到当前的 OgnlContext 对象了也就没法绕过安全管理器了。</p>
+
+<h3 id="总结">总结</h3>
+
+<p>Struts2 的安全问题层出不穷，它的漏洞往往影响比较大，同时漏洞点也经常会别人吐槽。若不是业务必要应该使用更好的框架来替代它。同时也可以由此去考虑一些别的框架在使用语言表达式的时候是否会存在一些类似的安全性问题。</p>
+
+<h3 id="参考来源">参考来源</h3>
+
+<ul>
+  <li>http://bobao.360.cn/learning/detail/3649.html</li>
+  <li>https://www.iswin.org/2016/03/20/Struts2-S2-029%E6%BC%8F%E6%B4%9E%E5%88%86%E6%9E%90/</li>
+</ul>
+
+    </div>
+    
+    
+
+  </div>
+</div>
+
+<div class="am-container lp-container">
+  <footer class="am-footer lp-footer">
+    <p>Copyright © 2014-2015 All Rights Reserved</p>
+    <p>Theme By <a href="https://github.com/RickGray/light-post">LightPost</a></p>
+  </afooter>
+</div>
+
+
+<div data-am-widget="gotop" class="am-gotop am-gotop-fixed">
+  <a href="#top" title="回到顶部">
+    <span class="am-gotop-title">GoTop</span>
+    <i class="am-gotop-icon am-icon-chevron-up"></i>
+  </a>
+</div>
+
+<script src="/public/js/jquery.min.js"></script>
+<script src="/public/js/amazeui.min.js"></script>
+<script>
+var _hmt = _hmt || [];
+(function() {
+var hm = document.createElement("script");
+hm.src = "//hm.baidu.com/hm.js?cff98725226896ccfb3b1634435b315c";
+var s = document.getElementsByTagName("script")[0];
+s.parentNode.insertBefore(hm, s);
+})();
+</script>
+</div>
+</body>
+</html>

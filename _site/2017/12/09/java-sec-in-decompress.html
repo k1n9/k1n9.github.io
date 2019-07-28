@@ -1,0 +1,173 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <title>Java文件解压的安全问题</title>
+  <link rel="icon" href="/favicon.ico">
+  <link rel="stylesheet" href="/public/css/amazeui.min.css">
+  <link rel="stylesheet" href="/public/css/app.css">
+</head>
+<body>
+
+<div class="am-container lp-container">
+  <header class="am-topbar lp-topbar">
+    <h1 class="am-topbar-brand">
+      <a href="/">k1n9's Blog</a>
+    </h1>
+    <button class="am-topbar-btn am-topbar-toggle am-btn am-btn-sm am-btn-danger am-show-sm-only" data-am-collapse="{target: '#lp-topbar-collapse'}"><span class="am-sr-only">导航切换</span> <span class="am-icon-bars"></span></button>
+    <div class="am-collapse am-topbar-collapse am-topbar-right" id="lp-topbar-collapse">
+      <ul class="am-nav am-nav-pills am-topbar-nav">
+        <li><a href="/">Archives</a></li>
+<!--         <li><a href="#">Categories</a></li> -->
+        <li><a href="/friends.html">Friends</a></li>
+   <!--      <li><a href="#">About Me</a></li> -->
+        <li><a href="/rss.xml">Rss</a></li>
+      </ul>
+    </div>
+  </header>
+</div>
+
+
+<div class="am-container lp-container">
+  <div class="lp-post">
+    <div class="lp-post-header">
+      <h1 class="lp-post-title">Java文件解压的安全问题</h1>
+      <div class="lp-post-meta">
+        <i class="am-icon-calculator"></i><span class="lp-post-date">2017-12-09</span>
+        <i class="am-icon-tags"></i><span class="lp-post-tags">Java</span>
+      </div>
+    </div>
+    <div class="lp-post-content">
+    <p>前几天有文章(<a href="https://research.checkpoint.com/parsedroid-targeting-android-development-research-community/">传送门</a>)分析了 Apktool 之前版本存在的两个漏洞，其中第二个漏洞是解包 Apk 时通过类似目录遍历的方式把 unknown 中的脚本解压到线上的网站目录从而实现 RCE。这让我想起了之前一篇讲述 Python 中解压文件时的安全问题的文章(<a href="http://bobao.360.cn/learning/detail/4503.html">传送门</a>)，其实 Apktool 这个也是 Java 做文件解压时存在一样的问题了。</p>
+
+<h3 id="0x01-demo-代码">0x01 Demo 代码</h3>
+
+<p>Java 中做压缩/解压操作代码</p>
+
+<div class="language-java highlighter-rouge"><div class="highlight"><pre class="highlight"><code><span class="kn">package</span> <span class="nc">ZipTest</span><span class="o">;</span>
+
+<span class="kn">import</span> <span class="nn">java.io.*</span><span class="o">;</span>
+<span class="kn">import</span> <span class="nn">java.util.zip.ZipEntry</span><span class="o">;</span>
+<span class="kn">import</span> <span class="nn">java.util.zip.ZipFile</span><span class="o">;</span>
+<span class="kn">import</span> <span class="nn">java.util.zip.ZipInputStream</span><span class="o">;</span>
+<span class="kn">import</span> <span class="nn">java.util.zip.ZipOutputStream</span><span class="o">;</span>
+
+<span class="cm">/**
+ * Created by k1n9 on 2017/12/7.
+ */</span>
+<span class="kd">public</span> <span class="kd">class</span> <span class="nc">Demo</span> <span class="o">{</span>
+    <span class="kd">public</span> <span class="kd">static</span> <span class="kt">void</span> <span class="nf">main</span><span class="o">(</span><span class="nc">String</span><span class="o">[]</span> <span class="n">args</span><span class="o">)</span> <span class="kd">throws</span> <span class="nc">Exception</span> <span class="o">{</span>
+
+        <span class="nc">ZipCompressSingleFile</span><span class="o">();</span>
+        <span class="nc">ZipDecompressFile</span><span class="o">();</span>
+
+    <span class="o">}</span>
+
+    <span class="kd">public</span> <span class="kd">static</span> <span class="kt">void</span> <span class="nf">ZipCompressSingleFile</span><span class="o">()</span> <span class="kd">throws</span> <span class="nc">Exception</span> <span class="o">{</span>
+        <span class="nc">System</span><span class="o">.</span><span class="na">out</span><span class="o">.</span><span class="na">println</span><span class="o">(</span><span class="nc">System</span><span class="o">.</span><span class="na">getProperty</span><span class="o">(</span><span class="s">"user.dir"</span><span class="o">));</span>
+
+        <span class="nc">ZipOutputStream</span> <span class="n">zos</span> <span class="o">=</span> <span class="k">new</span> <span class="nc">ZipOutputStream</span><span class="o">(</span><span class="k">new</span> <span class="nc">FileOutputStream</span><span class="o">(</span><span class="s">"/Users/k1n9/IdeaProjects/JavaLearn/test.zip"</span><span class="o">));</span>
+        <span class="nc">ZipEntry</span> <span class="n">entry</span> <span class="o">=</span> <span class="k">new</span> <span class="nc">ZipEntry</span><span class="o">(</span><span class="s">"../../../../../../../../../../../var/www/html/test.txt"</span><span class="o">);</span>
+        <span class="n">zos</span><span class="o">.</span><span class="na">putNextEntry</span><span class="o">(</span><span class="n">entry</span><span class="o">);</span>
+
+        <span class="nc">InputStream</span> <span class="n">is</span> <span class="o">=</span> <span class="k">new</span> <span class="nc">FileInputStream</span><span class="o">(</span><span class="s">"/Users/k1n9/IdeaProjects/JavaLearn/test.txt"</span><span class="o">);</span>
+        <span class="kt">int</span> <span class="n">len</span> <span class="o">=</span> <span class="mi">0</span><span class="o">;</span>
+        <span class="k">while</span> <span class="o">((</span><span class="n">len</span> <span class="o">=</span> <span class="n">is</span><span class="o">.</span><span class="na">read</span><span class="o">())</span> <span class="o">!=</span> <span class="o">-</span><span class="mi">1</span><span class="o">)</span> <span class="o">{</span>
+            <span class="n">zos</span><span class="o">.</span><span class="na">write</span><span class="o">(</span><span class="n">len</span><span class="o">);</span>
+        <span class="o">}</span>
+
+        <span class="n">is</span><span class="o">.</span><span class="na">close</span><span class="o">();</span>
+        <span class="n">zos</span><span class="o">.</span><span class="na">close</span><span class="o">();</span>
+    <span class="o">}</span>
+
+    <span class="kd">public</span> <span class="kd">static</span> <span class="kt">void</span> <span class="nf">ZipDecompressFile</span><span class="o">()</span> <span class="kd">throws</span> <span class="nc">Exception</span> <span class="o">{</span>
+        <span class="nc">File</span> <span class="n">file</span> <span class="o">=</span> <span class="k">new</span> <span class="nc">File</span><span class="o">(</span><span class="s">"./test.zip"</span><span class="o">);</span>
+
+        <span class="nc">ZipFile</span> <span class="n">zf</span> <span class="o">=</span> <span class="k">new</span> <span class="nc">ZipFile</span><span class="o">(</span><span class="n">file</span><span class="o">);</span>
+        <span class="nc">ZipInputStream</span> <span class="n">zis</span> <span class="o">=</span> <span class="k">new</span> <span class="nc">ZipInputStream</span><span class="o">(</span><span class="k">new</span> <span class="nc">FileInputStream</span><span class="o">(</span><span class="n">file</span><span class="o">));</span>
+        <span class="nc">ZipEntry</span> <span class="n">zipEntry</span> <span class="o">=</span> <span class="kc">null</span><span class="o">;</span>
+
+        <span class="k">while</span> <span class="o">((</span><span class="n">zipEntry</span> <span class="o">=</span> <span class="n">zis</span><span class="o">.</span><span class="na">getNextEntry</span><span class="o">())</span> <span class="o">!=</span> <span class="kc">null</span><span class="o">)</span> <span class="o">{</span>
+            <span class="nc">String</span> <span class="n">filename</span> <span class="o">=</span> <span class="n">zipEntry</span><span class="o">.</span><span class="na">getName</span><span class="o">();</span>
+            <span class="nc">File</span> <span class="n">f</span> <span class="o">=</span> <span class="k">new</span> <span class="nc">File</span><span class="o">(</span><span class="s">"/Users/k1n9/IdeaProjects/JavaLearn/"</span> <span class="o">+</span> <span class="n">filename</span><span class="o">);</span>
+
+            <span class="k">if</span> <span class="o">(!</span><span class="n">f</span><span class="o">.</span><span class="na">getParentFile</span><span class="o">().</span><span class="na">exists</span><span class="o">())</span> <span class="o">{</span>
+                <span class="n">f</span><span class="o">.</span><span class="na">getParentFile</span><span class="o">().</span><span class="na">mkdirs</span><span class="o">();</span>
+            <span class="o">}</span>
+
+            <span class="nc">BufferedOutputStream</span> <span class="n">bos</span> <span class="o">=</span> <span class="k">new</span> <span class="nc">BufferedOutputStream</span><span class="o">(</span><span class="k">new</span> <span class="nc">FileOutputStream</span><span class="o">(</span><span class="n">f</span><span class="o">));</span>
+            <span class="nc">InputStream</span> <span class="n">is</span> <span class="o">=</span> <span class="n">zf</span><span class="o">.</span><span class="na">getInputStream</span><span class="o">(</span><span class="n">zipEntry</span><span class="o">);</span>
+            <span class="kt">byte</span><span class="o">[]</span> <span class="n">data</span> <span class="o">=</span> <span class="k">new</span> <span class="kt">byte</span><span class="o">[</span><span class="mi">2048</span><span class="o">];</span>
+            <span class="kt">int</span> <span class="n">len</span> <span class="o">=</span> <span class="mi">0</span><span class="o">;</span>
+
+            <span class="k">while</span> <span class="o">((</span><span class="n">len</span> <span class="o">=</span> <span class="n">is</span><span class="o">.</span><span class="na">read</span><span class="o">(</span><span class="n">data</span><span class="o">))</span> <span class="o">!=</span> <span class="o">-</span><span class="mi">1</span><span class="o">)</span> <span class="o">{</span>
+                <span class="n">bos</span><span class="o">.</span><span class="na">write</span><span class="o">(</span><span class="n">data</span><span class="o">,</span> <span class="mi">0</span><span class="o">,</span> <span class="n">len</span><span class="o">);</span>
+            <span class="o">}</span>
+
+            <span class="n">bos</span><span class="o">.</span><span class="na">close</span><span class="o">();</span>
+            <span class="n">is</span><span class="o">.</span><span class="na">close</span><span class="o">();</span>
+        <span class="o">}</span>
+        <span class="n">zis</span><span class="o">.</span><span class="na">close</span><span class="o">();</span>
+    <span class="o">}</span>
+<span class="o">}</span>
+</code></pre></div></div>
+
+<p>压缩包中恶意文件路径的构造在实例化 ZipEntry 对象的时候，可以传入往上次目录跳这样的路径，这样压缩后的文件效果如下
+<img src="https://i.loli.net/2017/12/09/5a2b6bb14cbdd.png" alt="" /></p>
+
+<p>那么在做解压操作时要是没有去验证 ZipEntry 中的文件名是否合法便直接加到路径中写出来的话就会造成文件最终被解压到系统上其它的目录去了。在解压函数中还有一个对父目录的检测的，如果不存在的话就去创建这个父目录，因为真实情况的话往往会创建一个以时间戳来命名的目录再把文件解压到里面去，这里会有个问题，例如</p>
+
+<div class="highlighter-rouge"><div class="highlight"><pre class="highlight"><code>/Users/k1n9/IdeaProjects/JavaLearn/test.txt
+</code></pre></div></div>
+<p>这个是预设中的目标路径，JavaLearn 目录不存在的话便创建一个，这里没啥问题。但是在我们构造一个恶意路径后成了这样</p>
+
+<div class="highlighter-rouge"><div class="highlight"><pre class="highlight"><code>/Users/k1n9/IdeaProjects/JavaLearn/../../../../../../../../../../../var/www/html/test.txt
+</code></pre></div></div>
+<p>这里要是 JavaLearn 目录不存在也不会被创建，由于路径中的 JavaLearn 不存在，在 Linux 文件系统下这样的路径是非法的了，最终会抛出 FileNotFoundException 异常，文件也不会写出来。但是这种情况在 Windows 文件系统中无关系了，一样可以写出来。</p>
+
+<h3 id="0x02-如何利用">0x02 如何利用</h3>
+
+<p>假如是在 Tomcat 上的话，构造好一个 war 包，路径跳到 webapps。只要解压了，war 包被写到 webapps 目录中，再借助热部署完成 getshell。这只是一个想法了，也可以选择覆盖掉一些配置文件等等。当然要想真正利用还是有前提的：</p>
+
+<ul>
+  <li>已经获取到了目标的路径（默认或者爆破式的猜也是一些选择了）</li>
+  <li>要是解压路径有加类似时间戳这样的路径就还得考虑目标系统类型了</li>
+</ul>
+
+    </div>
+    
+    
+
+  </div>
+</div>
+
+<div class="am-container lp-container">
+  <footer class="am-footer lp-footer">
+    <p>Copyright © 2014-2015 All Rights Reserved</p>
+    <p>Theme By <a href="https://github.com/RickGray/light-post">LightPost</a></p>
+  </afooter>
+</div>
+
+
+<div data-am-widget="gotop" class="am-gotop am-gotop-fixed">
+  <a href="#top" title="回到顶部">
+    <span class="am-gotop-title">GoTop</span>
+    <i class="am-gotop-icon am-icon-chevron-up"></i>
+  </a>
+</div>
+
+<script src="/public/js/jquery.min.js"></script>
+<script src="/public/js/amazeui.min.js"></script>
+<script>
+var _hmt = _hmt || [];
+(function() {
+var hm = document.createElement("script");
+hm.src = "//hm.baidu.com/hm.js?cff98725226896ccfb3b1634435b315c";
+var s = document.getElementsByTagName("script")[0];
+s.parentNode.insertBefore(hm, s);
+})();
+</script>
+</div>
+</body>
+</html>

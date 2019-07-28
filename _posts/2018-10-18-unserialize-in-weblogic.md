@@ -1,0 +1,218 @@
+---
+layout: post
+title: 从WebLogic看反序列化漏洞的利用与防御
+tags: [Java, WebLogic]
+comment: false
+---
+
+## 0x00 前言
+上周出的 WebLogic 反序列漏洞，跟进分析的时候发现涉及到不少 Java 反序列化的知识，然后借这个机会把一些 Java 反序列化的利用与防御需要的知识点重新捋一遍，做了一些测试和调试后写成这份报告。文中若有错漏之处，欢迎指出。
+
+## 0x01 Java 反序列化时序
+
+Java 反序列化时序对于理解 Java 反序列化的利用或是防御都是必要的，例如有些 Gadget 为什么从 readObject 方法开始进行构造，为什么反序列化防御代码写在 resolveClass 方法中等。先写下三个相关的方法。
+
+### 1.1 readObject
+
+这个方法用于读取对象，这里要说的 readObject 跟很多同名的这个方法完全不是一回事的，注意下图中的方法描述符跟其它同名方法的区别。
+![](https://i.loli.net/2019/07/28/5d3d4b15e18a922773.jpg)
+
+java.io.ObjectInputStream 类的注释中有提到，要是想在序列化或者反序列化的过程中做些别的操作可以通过在类中实现这三个方法来实现。比如类 EvilObj 实现了这里的 readObject 方法（方法的描述符需要跟注释提到的一样）的话，在类 EvilObj 的反序列化过程就会调用到这个 readObject 方法，代码例子：
+![](https://i.loli.net/2019/07/28/5d3d4b88ac18c19438.png)
+
+其调用栈如下
+![](https://i.loli.net/2019/07/28/5d3d4b12ed21764351.jpg)
+
+看下 readSerialData 方法，在读取序列化数据的时候做判断若是该类实现了 readObject 方法，则通过反射对该方法进行调用。
+![](https://i.loli.net/2019/07/28/5d3d4b3b0b87619785.jpg)
+
+到这里就能明白为什么有些 Java 反序列化利用的构造是从这里 readObject 方法开始的，然后通过 readObject 中的代码一步一步去构造最终达成利用，这次的 CVE-2018-3191 就是很好的一个例子，后文会讲到 CVE-2018-3191 使用的 Gadget。当然这只是 Java 反序列化利用构造的其中一种方法，更多的可以参考 ysoserial 里的各种 Gadget 的构造。
+
+### 1.2 resolveClass 和 resolveProxyClass
+
+这两个方法都是在类 java.io.ObjectInputStream 中，resolveClass 用于根据类描述符返回相应的类，resolveProxyClass 用于返回实现了代理类描述符中所有接口的代理类。这两个类的功能使得它们可以被用于 Java 反序列的防御，比如在 resolveClass 方法中可以先对类名进行检测然后决定是否还要继续进行反序列化操作。如果想要在这两个方法中添加一些操作（比如前面提到的做反序列化防御），那处理数据流的类需要继承 java.io.ObjectInputStream ，然后重写下面对应的方法：
+
+```java
+protected Class<?> resolveClass(ObjectStreamClass desc)
+protected Class<?> resolveProxyClass(String[] interfaces)
+```
+
+这里需要避免混淆的一点是这两个方法是在处理数据流的类中重写，而不是在被反序列化的类中重写，代码例子：
+![](https://i.loli.net/2019/07/28/5d3d4b890c68c84646.png)
+
+其调用栈如下
+![](https://i.loli.net/2019/07/28/5d3d4b3b23e5815126.jpg)
+
+同理 resolveProxyClass 的重写方式也是这样。这里要知道的一点是并非在 Java 的反序列化中都需要调用到这两个方法，看下调用栈前面的 readObject0 方法中的部分代码：
+![](https://i.loli.net/2019/07/28/5d3d4b776b47539492.jpg)
+
+看 switch 代码块，假如序列化的是一个 String 对象，往里跟进去是用不到 resolveClass 或 resolveProxyClass 方法的。resolveProxyClass 方法也只是在反序列化代理对象时才会被调用。通过查看序列化数据结构非常有助于理解反序列化的整个流程，推荐一个用于查看序列化数据结构的工具：[SerializationDumper](https://github.com/NickstaDB/SerializationDumper)
+
+### 1.3 反序列化时序
+
+贴一张廖新喜师傅在“JSON反序列化之殇”议题中的反序列化利用时序图，用于从整体上看反序列化的流程。
+![](https://i.loli.net/2019/07/28/5d3d4b7a9f05050273.jpg)
+
+普通对象和代理对象的反序列化走的流程是不一样的，可以看 readClassDesc 方法：
+![](https://i.loli.net/2019/07/28/5d3d4b3c628dd29864.jpg)
+
+对应着前面时序图中实例化的那一步的不同流程。
+
+### 1.4 小结
+
+这一章主要是介绍了 Java 反序列化相关的三个方法，通过代码跟踪调试的方式来确定其在什么时候会被调用到，再结合反序列化的时序图就可以对反序列化的整个流程有一定的了解。其实去分析了下反序列化的时序主要是为了知道两点，第一个是反序列化的大体流程，第二个是有哪些方法在这流程中有被调用到，为了解 Java 反序列化的利用和防御做一些知识准备。
+
+## 0x02 WebLogi T3 反序列化及其防御机制
+
+T3 从 WebLogic 的启动到对消息进行序列化的调用栈（由下往上）：
+
+```
+at weblogic.rjvm.InboundMsgAbbrev.readObject(InboundMsgAbbrev.java:73)
+at weblogic.rjvm.InboundMsgAbbrev.read(InboundMsgAbbrev.java:45)
+at weblogic.rjvm.MsgAbbrevJVMConnection.readMsgAbbrevs(MsgAbbrevJVMConnection.java:283)
+at weblogic.rjvm.MsgAbbrevInputStream.init(MsgAbbrevInputStream.java:214)
+at weblogic.rjvm.MsgAbbrevJVMConnection.dispatch(MsgAbbrevJVMConnection.java:498)
+at weblogic.rjvm.t3.MuxableSocketT3.dispatch(MuxableSocketT3.java:348)
+at weblogic.socket.BaseAbstractMuxableSocket.dispatch(BaseAbstractMuxableSocket.java:394)
+at weblogic.socket.SocketMuxer.readReadySocketOnce(SocketMuxer.java:960)
+at weblogic.socket.SocketMuxer.readReadySocket(SocketMuxer.java:897)
+at weblogic.socket.PosixSocketMuxer.processSockets(PosixSocketMuxer.java:130)
+at weblogic.socket.SocketReaderRequest.run(SocketReaderRequest.java:29)
+at weblogic.socket.SocketReaderRequest.execute(SocketReaderRequest.java:42)
+at weblogic.kernel.ExecuteThread.execute(ExecuteThread.java:145)
+at weblogic.kernel.ExecuteThread.run(ExecuteThread.java:117)
+```
+
+这里没有去分析 T3 协议的具体实现，抓了一下 stopWebLogic.sh 在执行过程中的数据包：
+![](https://i.loli.net/2019/07/28/5d3d4b734801533527.jpg)
+
+第一个是握手包，然后第二个包中就可以找到带有序列化数据了，包的前 4 个字节为包的长度。替换序列化数据那部分，然后做数据包重放就可以使得 T3 协议反序列化的数据为自己所构造的了。
+
+### 2.1 WebLogic 的反序列化防御机制
+
+从调用栈可以知道是在哪里做的反序列化，InboundMsgAbbrev 类的 readObject 方法：
+![](https://i.loli.net/2019/07/28/5d3d4b111f67d83095.jpg)
+
+留意下这里的 readObject 方法的描述符，跟前一章提的 readObject 方法描述符是不一样的，也就是说假如反序列化一个 InboundMsgAbbrev 对象，这里的 readObject 方法是不会被调用到的。这里的 readObject 只是在 T3 协议处理消息的代码流程中被使用到。
+
+可以看到处理输入数据流的类为 ServerChannelInputStream，由前一小节知道输入流是可以被控制的，接下来就是实例化 ServerChannelInputStream 对象然后进行反序列化操作。先看下 ServerChannelInputStream 类：
+![](https://i.loli.net/2019/07/28/5d3d4b402957022679.jpg)
+
+ServerChannelInputStream 类的继承图：
+![](https://i.loli.net/2019/07/28/5d3d4b7441a6e48784.jpg)
+
+可以得知 ServerChannelInputStream 类是继承了 ObjectInputstream 类的，并且重写了 resolveClass 和 resolveProxyClass 方法。由上一章的内容可以知道 ServerChannelInputStream 类中的这两个方法在对不同的序列化数据进行反序列化的时候会被调用到，这样就不难理解 WebLogic 为什么会选择在这两个方法中添加做过滤的代码了（其实之前出现的针对反序列化的防御方法也有这么做的，重写 ObjectInputstream 类中的 resolveClass 方法或者直接重写一个 ObjectInputstream）。
+
+先说一下 resolveProxyClass 这个方法里为什么用代理的接口名字和 "java.rmi.registry.Registry" 进行对比，这个是 CVE-2017-3248 漏洞的补丁。CVE-2017-3248 漏洞的利用用到 JRMPClient 这个 Gadget，ysoserial 中的 JRMPClient 用到了动态代理，代理的接口就是 "java.rmi.registry.Registry"。针对这个就出现了不少的绕过方法，比如换一个接口 java.rmi.activation.Activator，或者直接不使用代理都是可以的。这里涉及到了 JRMPClient 这个 Gadget 的具体构造，但这不属于本文的内容，想了解这个的话建议去看 ysoserial 中具体是如何构造实现的。
+
+resolveClass 方法中的 checkLegacyBlacklistIfNeeded 方法是用来针对类名和包名做过滤。
+
+从 checkLegacyBlacklistIfNeeded 方法跟进去直到进入 WebLogicObjectInputFilter 类的 checkLegacyBlacklistIfNeeded 方法：
+![](https://i.loli.net/2019/07/28/5d3d4b132c32e11867.jpg)
+
+可以看到这里是在 Jre 自带的过滤（JEP290）不可用的情况下才会使用自身实现的方法进行过滤，如果检测到是在黑名单中会抛出异常 Unauthorized deserialization attempt。看下 isBlacklistedLegacy 方法：
+![](https://i.loli.net/2019/07/28/5d3d4b17120fc13015.jpg)
+
+可以看到要是类名第一个字符为 [（在字段描述符中是数组）或是 primitiveTypes（一些基础数据类型）中的其中一个，是不会进行检测的。
+![](https://i.loli.net/2019/07/28/5d3d4b11da62f85450.jpg)
+
+检测的地方有两个，一个是类名，一个包名，只要其中一个出现在 LEGACY_BLACKLIST 中便会像前面看到的抛出异常。下面来看一下 LEGACY_BLACKLIST 的值是从哪里来的。
+
+看 WebLogicObjectInputFilter 的一个初始化方法：
+![](https://i.loli.net/2019/07/28/5d3d4b4453fdb93260.jpg)
+
+在 Jre 的过滤不可用的情况下会设置 LEGACY_BLACKLIST 的值，跟入 getLegacyBlacklist 方法：
+![](https://i.loli.net/2019/07/28/5d3d4b364ab0942291.jpg)
+
+值来自于 WebLogicFilterConfig 类的成员变量 BLACKLIST，BLACKLIST 的值由 constructLegacyBlacklist 方法生成：
+![](https://i.loli.net/2019/07/28/5d3d4b44da70d34381.jpg)
+
+这里的参数var1，var2 和 var3 对应着
+![](https://i.loli.net/2019/07/28/5d3d4b44e40a025543.jpg)
+
+也就是说还可以通过启动参数来控制是否添加黑名单，动态添加或删除一些黑名单。默认情况下的话黑名单就是来自 WebLogicFilterConfig 类中的 DEFAULT_BLACKLIST_PACKAGES 和 DEFAULT_BLACKLIST_CLASSES 了。
+
+打了十月份补丁之后的黑名单如下：
+
+```
+private static final String[] DEFAULT_BLACKLIST_PACKAGES = new String[]{"org.apache.commons.collections.functors", "com.sun.org.apache.xalan.internal.xsltc.trax", "javassist", "java.rmi.activation", "sun.rmi.server"};
+private static final String[] DEFAULT_BLACKLIST_CLASSES = new String[]{"org.codehaus.groovy.runtime.ConvertedClosure", "org.codehaus.groovy.runtime.ConversionHandler", "org.codehaus.groovy.runtime.MethodClosure", "org.springframework.transaction.support.AbstractPlatformTransactionManager", "java.rmi.server.UnicastRemoteObject", "java.rmi.server.RemoteObjectInvocationHandler", "com.bea.core.repackaged.springframework.transaction.support.AbstractPlatformTransactionManager", "java.rmi.server.RemoteObject"};
+
+```
+
+### 2.2 WebLogic 使用 JEP290 做的过滤
+
+JEP290 是 Java9 新添加可以对序列化数据进行检测的一个特性。之后往下对 8u121，7u131 和 6u141 这几个版本也支持了。该特性可用于对序列化数据的最大字节数，深度，数组大小和引用数进行限制，当然还有对类的检测了。使用这个的方法可以为实现 ObjectInputFilter 接口（低版本的 JDK 只在 sun.misc 包中有这个类，Java9 以上在 java.io 包中，目前 Oracle 对 Java9 和 Java10 都停止支持了，最新为 Java11），然后重写 checkInput 方法来对序列化数据进行检测。高版本的 JDK 中 RMI 就有用到这个来做过滤，看下 WebLogic 是如何使用的，JDK 版本为 8u152。
+
+WebLogic 是通过反射来获取到 java.io.ObjectInputFilter 或是 sun.misc.ObjectInputFilter 的各个方法的方式来实现一个 JreFilterApiProxy 对象：
+![](https://i.loli.net/2019/07/28/5d3d4b506f95518455.jpg)
+
+determineJreFilterSupportLevel 方法：
+![](https://i.loli.net/2019/07/28/5d3d4b64ade1331745.jpg)
+
+后面的流程大抵如下，根据 DEFAULT_BLACKLIST_PACKAGES 和 DEFAULT_BLACKLIST_CLASSES 的值来给 WebLogicFilterConfig 对象中的成员变量 serialFilter 赋值，serialFilter 的值是作为 JEP290 对序列化数据进行检测的一个格式（里面包含需要做检测的默认值，用分号隔开。包名后面需要带星号，包名或者类名前面带感叹号的话表示黑名单，没有则表示白名单。这些在 ObjectInputFilter 这个接口的方法中都能看到）。接下来就是反射调用 setObjectInputFilter 方法将 serialFilter 的值赋给 ObjectInputStream 中的 serialFilter（假如 ObjectInputStream 对象中的 serialFilter 值为空是不会对序列化数据进行检测的）。看一下 WebLogic 设置好的 serialFilter：
+![](https://i.loli.net/2019/07/28/5d3d4b49de51890407.jpg)
+
+再看 ObjectInputStream 这边，图的左下可以看到从反序列化到进入检测的调用栈：
+![](https://i.loli.net/2019/07/28/5d3d4b69afdfc19889.jpg)
+
+跟入 checkInput 方法：
+![](https://i.loli.net/2019/07/28/5d3d4b6c287d937531.jpg)
+
+前面有些常规的检测，红圈部分是针对 serialFilter 里的格式进行检测的，这里用到了 Function<T, U> 接口和 lambda 语法。看下 ObjectInputFilter 接口中的内部类 Global 的代码块就能明白这里是咋做的检测了。
+![](https://i.loli.net/2019/07/28/5d3d4b90452f470763.png)
+
+看到它是做的字符串对比（类名和包名）。再回到 ObjectInputStream 类中的 filterCheck 方法代码块的下面：
+![](https://i.loli.net/2019/07/28/5d3d4b6e346dd13525.jpg)
+
+只要返回的状态是空或者 REJECTED 就直接会抛出异常结束反序列流程了。其它的返回状态只做一个日志记录。
+
+### 2.3 小结
+
+这一章中可以看到 WebLogic 针对反序列化的防御方法有两种，分别对应着 JEP290 不可用和可用的这两种情况。JEP290 这个的代码逻辑还是挺长的，所以在写分析的时候并没有把每一步的具体内容都写上。这两种方法都是用黑名单的方式来做的过滤，其实它们也不是不能做成白名单，个人觉得白名单的方式应该很容易影响程序的功能，因为 Java 中各种接口和类的封装导致搞不清在反序列化的时候会用到哪些接口或类，所以写代码的时候不好去确定这样一个白名单出来。目前来看这样的过滤方式只有说是在找到新的 Gadget 的情况下才能绕过，从另一个角度来看这样的过滤也使得这里会一直存在问题，只是问题还没被发现。
+
+## 0x03 WebLogic 远程调试及10月补丁修复的漏洞
+
+### 3.1 WebLogic 远程调试
+
+修改 domain/bin/setDomainEnv.sh，设置 debugFlag 为true
+
+![](https://i.loli.net/2019/07/28/5d3d4b6d5bf2436564.jpg)
+
+这样启动的时候会监听 8453 作为调试端口，然后使用 Idea 之类的 IDE 建立一个远程调试的配置连接到该端口就可以。需要把 WebLogic 中 jar 包添加到项目中去。因为 WebLogic 没有源码，调试时的代码都是反编译得到的，所以有监控不到变量或者执行的位置跟代码行对不上的问题。
+
+### 3.1 CVE-2018-3245
+
+这个洞是 7 月份 CVE-2018-2893 的补丁还没有修复完善导致的绕过，涉及到 JRMPClient 这个 Gadget 的构造，具体可以参考[Weblogic JRMP反序列化漏洞回顾](https://xz.aliyun.com/t/2479)
+
+这里提一点，黑名单中添加的类名不是直接序列化对象的类名而是它的父类类名能做到过滤效果的原因是在序列化数据中是会带上父类类名的。
+
+### 3.2 CVE-2018-3191
+
+这个 Gadget 不是新的，只是在 com.bea.core.repackaged.springframework 这个包里还有相关的类。
+
+结合第一章提到的 readObject 这个 Gadget 是非常好理解的，只是还需要知道 JNDI 的利用方式才能完整实现利用。
+
+com.bea.core.repackaged.springframework.transaction.jta.JtaTransactionManager 这个类在进行反序列化的时候会触发 JNDI 查询，结合针对 JNDI 的利用便可以做到代码执行的效果。
+
+JtaTransactionManager 类的 readObject 方法：
+![](https://i.loli.net/2019/07/28/5d3d4b1060a7437750.jpg)
+
+进入 initUserTransactionAndTransactionManager 方法：
+![](https://i.loli.net/2019/07/28/5d3d4b14d7baf71193.jpg)
+
+进入 lookupUserTransaction 方法再往下跟很快就可以看到 JDNI 的查询方法 lookup：
+![](https://i.loli.net/2019/07/28/5d3d4b15f32b356045.jpg)
+
+针对 JNDI 的一个利用前提便是 lookup 方法的参数可控，即 name 的值能被传入成一个 RMI 或者 LDAP 的绝对路径。从前面的代码可以知道这里的 name 的值来自于 JtaTransactionManager 类中的成员变量  transactionManagerName，因此只要设置 transactionManagerName 值为可控的 RMI 地址，然后将 JtaTransactionManager 对象序列化后通过 T3 协议传输给 WebLogic 便可以在 T3 协议对数据进行反序列化的时候完成利用。
+
+利用演示：
+![](https://i.loli.net/2019/07/28/5d3d4b23a89d658608.jpg)
+
+因为是针对 JDNI 的利用，所以要想在默认的情况下进行利用需要 JDK 的版本小于 8u121 或者 7u131（因为高于这些版本默认情况下已经将 trustURLCodebase 的值设为 false，使得不能做远程类加载），同时服务器需要能够连接外网。
+
+## 0x03 参考
+
+- https://www.nccgroup.trust/us/our-research/combating-java-deserialization-vulnerabilities-with-look-ahead-object-input-streams-laois/
+- https://mp.weixin.qq.com/s/ebKHjpbQcszAy_vPocW0Sg
+
