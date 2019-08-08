@@ -1,6 +1,6 @@
 ---
 layout: post
-title: Ysoserial中的CommonsBeanutilsCollectionsLogging1分析
+title: CommonsBeanutilsCollectionsLogging1分析
 tags: [Java, Gadgets]
 comment: false
 ---
